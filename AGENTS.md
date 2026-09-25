@@ -49,11 +49,15 @@
 
 **不要动提示词前缀。** 分支引导词拼在每轮问题前面，不进系统提示词。工具名单是插件级常量，模型看到的名单与执行层判据同源。改动引导词的任何字都会让该段的前缀缓存失效。
 
+**不要把推给模型的文本改回中文，也不要在 zh/en 两张表里各写一份。** 分支引导词、PTC 变体引导词与 guard 的拒绝理由都来自唯一的 `PROMPT_TEXT`（`lib/index.js`，**英文**），两张语言表只是引用它；只有**用户可见**的文案（面板里的错误与提示）才随界面语言。理由：DSH 自身的系统提示词与工具描述都是英文，指令语言与平台一致更稳；而且**换界面语言不该换提示词**（行为可复现、问题可对照）。`scripts/smoke.mjs` 会检查这段文本里没有中文、且两张表引用同一份。
+
 **不要把"自选可用工具"加回来。** 放行名单只存在于 `ALLOWED_TOOLS` 与 `TOOL_CHOICES` 两个常量里，插件不接受客户端提交的工具名：多一层可配置就多一处能把只读保证改坏的地方。
 
 **不要改回官方 `ctx.subagents.startContinuable`。** 它在结算时会把子会话的最终回答当成父会话的用户消息投回来，并唤醒父模型跑一整轮，直接违反本插件的前提。
 
 **不要给客户端 `inject` 加服务名。** 写错一个名字会让 fiber 永久 pending 并白屏。当前五个：`slots`、`locale`、`sidebarRightTabs`、`sidebarRight`、`modelDirectories`。
+
+**不要删掉「跑前解锁、跑完回藏」这套循环，也不要把 `unarchiveSession` 改成硬调。** DSH `0.1.7-rc.1` 起，`dsh-api-session-controller` 的 `ArchivedSessionGate` 会拒掉**已归档会话**的任何模型步（`agent/pre-step` ⇒ reject ⇒ `dsh-agent-loop` 把轮次收成 `turn/end { reason: 'blocked' }`，**连模型请求都不会发出**）。本插件正是用归档来隐藏侧会话 ⇒ 少了 `handleStart` 里 `followup` 之前那次 `releaseArchiveGate()`，或少了 `finishJob` 里那次 `rehideAfterTurn()`，侧枝在 0.1.7 上就**每一轮全废**（面板会显示 `T.blocked`；那句「内容被安全策略拦截」与内容策略毫无关系，别被它带偏）。而 `unarchiveSession` 是 **`0.1.6-alpha.2`** 才有的方法：**必须走 `typeof` 特性探测**，硬调会让 `0.1.5-rc.2` 抛错，直接毁掉向后兼容。`scripts/smoke.mjs` 的第 ⑥ 节守着这套形状。
 
 **SSE 响应是整条手写的**（`Connection: close`）。换成框架自带的写法会坏，原因写在 `lib/index.js` 的 `handleStream` 注释里。
 
@@ -72,6 +76,8 @@
 **为什么不用官方的可续子会话。** `ctx.subagents.startContinuable` 表面上正好合适（官方提供的、可继续对话的子会话），但它结算时会把子会话的最终回答当成一条**父会话用户消息**投回父会话，并唤醒父模型跑一整轮（`dsh-subagent` 的 `watchSettlement` / `notifySettlement`，官方 README 说明这是设计行为且没有开关）。对多数场景合理，但对本插件是致命的：直接违反"答案不进主会话"这个前提，还要为此多跑一轮模型。
 
 **为什么自建侧会话、以及为什么种子取"已完成回合前缀"。** 现在的做法是 `ctx.agents.create()` 建一个**普通侧会话**（`meta.parentSession` 只当血缘，**不设** `origin:'subagent'` —— 不需要子代理的生命周期，也不想让主会话里出现子代理卡片），出生时用公开的 `session.snapshotEvents()` 读出父会话事件、自己切到最后一个 `turn/end` 当种子，再在 `setup` 里 `agentPresets.composeFrom(agentCtx, parent.ctx)` 继承父会话的 preset/工具/persona。这样提示词前缀与父会话逐字一致，**继续命中原有的前缀缓存**；多轮追问就是同一个会话上继续 `followup`。代价是继承的是**开段那一刻的快照**：开段之后父会话的新回合不进这条分支（否则每次追问都要重算种子，前缀跟着变，缓存白拿），用户要带上新内容得「清空」另起一段。
+
+**为什么侧会话要归档、又为什么要"跑前解锁、跑完回藏"。** 侧会话是一条**真实会话**，不处理它就会在左侧边栏多出一行、和用户自己的对话混在一起。官方把会话从分组界面藏起来的唯一手段就是**归档**（官方 README 自己把归档集描述成 "sessions hidden from every grouping surface"），所以本插件建段即归档。问题是 `0.1.7-rc.1` 给"已归档"加了第二层语义：**已归档 ⇒ 不许运行**（`ArchivedSessionGate` 在 `agent/pre-step` 上拒绝）。于是"建段即归档"这个写法在新版本上会**自己把自己锁死**（每一轮都在 `followup` 之前被拦，连模型请求都不发）。而**不能**改成"干脆不归档"就完事——那会让侧会话重新出现在会话列表里，那是产品体验、不是实现细节。现在的取舍是三步：**空闲时归档（列表干净）→ 每轮投递前取消归档（不被闸）→ 该轮结算后再归档（列表重新干净）**。代价如实登记：回答进行中它可能短暂出现在侧栏，以及每轮多两三次持久写盘。另一条路是官方 `origin: 'subagent'`（侧栏原生隐藏子代理来源的行），但它会连带子代理的生命周期语义，与"不设 `origin:'subagent'`"那条前提冲突，所以没走。
 
 **为什么分支引导词拼在问题前面。** 引导词若进系统提示词，前缀就与主会话分叉、缓存全废。所以它拼在**每段第一轮的问题前面**，且同段内必须逐字一致。
 
@@ -110,14 +116,15 @@
 node scripts/smoke.mjs
 ```
 
-不需要 DSH 运行时，直接加载宿主半并用假 ctx 调 `apply()`。它守的五处：
+不需要 DSH 运行时，直接加载宿主半并用假 ctx 调 `apply()`。它守的六处：
 
 1. 模块能加载、导出名与 `package.json` 一致、路由前缀是 `/side-branch`、卸载 disposer 可调用；
 2. **只读承诺**：`ALLOWED_TOOLS` 与 `TOOL_CHOICES` 仍是那六个名字且互相一致，九个危险工具名都不在其中；客户端没有工具开关的残留、宿主不接受客户端提交的工具名单；分支引导词的名单直接来自常量；guard 的判据仍是按名单放行、注册点仍在 `setup(agentCtx)` 里、拿不到 guard 仍 fail-loud。
    ⚠️ 这一项里"guard 的判据"是**源码级正则断言**，不是真的驱动一次拦截 —— 真拦截要靠端到端（见下）；
 3. 客户端 bundle 存在、inject 仍是那五个服务名、不含调试导出；
 4. `package.json` 与 `cordis.patch.yml` 的包名一致；
-5. `dsh.client.inject` 里每个包在本机 DSH 安装目录里真实存在（用 `DSH_INSTALL_DIR` 指定路径，找不到就跳过这一项）。
+5. `dsh.client.inject` 里每个包在本机 DSH 安装目录里真实存在（用 `DSH_INSTALL_DIR` 指定路径，找不到就跳过这一项）；
+6. **归档闸对策**：解锁必须排在 `followup` 之前、必须经 `typeof` 特性探测、失败不得抛；回藏必须挂在 `finishJob`、要有界退避、同样不得抛；建段仍然先归档。这一节守的就是"同一份源码同时兼容 0.1.5 与 0.1.7"这条线。
 
 它**不验证**回答质量、真实 guard 拦截、SSE 行为与界面。端到端验证需要：
 
@@ -126,4 +133,12 @@ node scripts/smoke.mjs
 3. 在页面里划选文字、打开面板、提问；
 4. 检查启动日志出现 `[side-branch]` 前缀的行。
 
-仓库内没有端到端测试套件。改动 guard、提示词前缀或 SSE 那几处时，第 2 步到第 4 步必须人工跑一遍。
+仓库内没有端到端测试套件。改动 guard、提示词前缀、模型可见文本（`PROMPT_TEXT`）、归档闸那几处或 SSE 时，第 2 步到第 4 步必须人工跑一遍。
+
+## 提交与推送
+
+- **提交信息（commit message）一律用英文。** 这是公开仓库、历史面向英文读者：标题用 `type: 祈使句`（如 `fix: un-archive the side session before each turn`），正文讲"为什么"，**不要混中文**。
+- 建议拆成两个提交：`lib/` + `scripts/` 的行为改动一个，纯文档 / 版本号一个。
+- **推之前**先跑 `node scripts/smoke.mjs`（上一节），并在真宿主里人工跑一遍受影响的链路。
+- 版本号与 `docs/CHANGELOG.md` 同步更新；发布时打 `v<version>` 标签（已有 `v0.1.0`）。
+- 远端：`origin` = `github.com/wucl12/dsh-side-branch`，主分支 `main`。

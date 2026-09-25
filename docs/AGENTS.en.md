@@ -49,11 +49,15 @@ Failure criteria and what they mean:
 
 **Do not touch the prompt prefix.** The branch preamble is concatenated in front of each turn's question; it does not go into the system prompt. The tool list is a plugin-level constant, so the list the model sees and the execution-layer criterion come from the same source. Changing any character of the preamble invalidates that segment's prefix cache.
 
+**Do not translate the model-facing text back into Chinese, and do not keep one copy per language table.** The branch preamble, the PTC variant and the guard's deny reason all come from the single `PROMPT_TEXT` constant in `lib/index.js` (**English**); the zh/en tables merely reference it. Only **user-visible** strings (panel errors and hints) follow the interface language. Why: DSH's own system prompts and tool descriptions are English, so matching the platform's instruction language is more reliable; and **switching the interface language must not switch the prompt** (reproducible behaviour, comparable reports). `scripts/smoke.mjs` checks that this text contains no CJK and that both tables reference the same copy.
+
 **Do not add "choose your own available tools" back.** The allow-list exists only in the two constants `ALLOWED_TOOLS` and `TOOL_CHOICES`, and the plugin does not accept tool names submitted by the client: one more configurable layer is one more place where the read-only guarantee can be broken.
 
 **Do not revert to the official `ctx.subagents.startContinuable`.** On settlement it posts the child session's final answer back as a user message of the parent session and wakes the parent model for a full turn, which directly violates this plugin's premise.
 
 **Do not add service names to the client `inject`.** Getting one name wrong leaves the fiber permanently pending and blanks the page. There are currently five: `slots`, `locale`, `sidebarRightTabs`, `sidebarRight`, `modelDirectories`.
+
+**Do not remove the "un-archive before a turn, re-archive after it" cycle, and do not turn `unarchiveSession` into a hard call.** From DSH `0.1.7-rc.1`, `dsh-api-session-controller`'s `ArchivedSessionGate` rejects any model step proposed for an **archived session** (`agent/pre-step` ⇒ reject ⇒ `dsh-agent-loop` ends the turn as `turn/end { reason: 'blocked' }`, **without a model request ever being sent**). This plugin hides side sessions precisely by archiving them ⇒ drop the `releaseArchiveGate()` call before `followup` in `handleStart`, or the `rehideAfterTurn()` call in `finishJob`, and the branch is **dead on every single turn** on 0.1.7 (the panel shows `T.blocked`; that "content blocked by security policy" wording has nothing to do with any content policy — do not be misled by it). And `unarchiveSession` only exists from **`0.1.6-alpha.2`**: it **must be feature-detected with `typeof`**, because a hard call throws on `0.1.5-rc.2` and destroys backward compatibility outright. Section ⑥ of `scripts/smoke.mjs` guards this shape.
 
 **The SSE response is hand-written from end to end** (`Connection: close`). Replacing it with the framework's built-in way of writing it will break it; the reason is in the `handleStream` comment in `lib/index.js`.
 
@@ -72,6 +76,8 @@ The following are approaches that "look like less work but break this plugin's p
 **Why not use the official continuable child session.** `ctx.subagents.startContinuable` looks exactly right on the surface (officially provided, a child session you can keep talking to), but on settlement it posts the child session's final answer back into the parent session as a **parent-session user message** and wakes the parent model for a full turn (`watchSettlement` / `notifySettlement` in `dsh-subagent`; the official README states this is designed behaviour with no switch). That is reasonable for most scenarios, but fatal for this plugin: it directly violates the "the answer does not enter the main session" premise, and costs an extra model turn on top.
 
 **Why we build the side session ourselves, and why the seed is the "completed-turn prefix".** The current approach is `ctx.agents.create()` to create a **plain side session** (`meta.parentSession` is used only as lineage, `origin:'subagent'` is **not** set — we do not need a subagent lifecycle, and we do not want a subagent card appearing in the main session), then at birth we use the public `session.snapshotEvents()` to read out the parent session's events and cut to the last `turn/end` ourselves as the seed, and in `setup` we use `agentPresets.composeFrom(agentCtx, parent.ctx)` to inherit the parent session's preset/tools/persona. This makes the prompt prefix word-for-word identical to the parent session's, so it **keeps hitting the existing prefix cache**; follow-up questions are just a continued `followup` on the same session. The cost is that what is inherited is the **snapshot at the moment the segment was opened**: new turns in the parent session after the segment is opened do not enter this branch (otherwise every follow-up would have to recompute the seed, the prefix would change with it, and the cache would be wasted), and a user who wants to carry new content in has to "Clear" and start a new segment.
+
+**Why the side session is archived, and why it is un-archived and re-archived around every turn.** A side session is a **real session**, and left alone it would add an extra row to the left sidebar, mixed in with the user's own conversations. The only official way to hide a session from the grouping surfaces is to **archive** it (the official README itself describes the archive set as "sessions hidden from every grouping surface"), so the plugin archives a side session the moment it is created. The problem is that `0.1.7-rc.1` gave "archived" a second meaning: **archived ⇒ must not run** (`ArchivedSessionGate` rejects it at `agent/pre-step`). So "archive at birth" **locks the plugin out of itself** on the new version (every turn is stopped before `followup`, no model request is sent). And it **cannot** simply be changed to "do not archive at all" — that would put side sessions back into the session list, which is product behaviour, not an implementation detail. The current trade-off is three steps: **archive while idle (clean list) → un-archive before each turn is delivered (not gated) → archive again once that turn settles (clean list again)**. The costs are recorded honestly: the row may briefly appear in the sidebar while an answer is running, and each turn costs two or three extra durable writes. The other route is the official `origin: 'subagent'` (the sidebar natively hides rows whose summary has that origin), but it drags in subagent lifecycle semantics and conflicts with the "do not set `origin:'subagent'`" premise, so it was not taken.
 
 **Why the branch preamble is concatenated in front of the question.** If the preamble went into the system prompt, the prefix would fork away from the main session's and the cache would be entirely wasted. So it is concatenated **in front of the question of the first turn of each segment**, and must be word-for-word identical within a segment.
 
@@ -110,14 +116,15 @@ Failure responses carry a machine-readable `code`, always with a `side-branch/` 
 node scripts/smoke.mjs
 ```
 
-It needs no DSH runtime; it loads the host half directly and calls `apply()` with a fake ctx. The five things it guards:
+It needs no DSH runtime; it loads the host half directly and calls `apply()` with a fake ctx. The six things it guards:
 
 1. the module loads, the export name matches `package.json`, the route prefix is `/side-branch`, and the unload disposer is callable;
 2. **the read-only promise**: `ALLOWED_TOOLS` and `TOOL_CHOICES` are still those six names and consistent with each other, and none of the nine dangerous tool names is among them; the client has no leftover tool switches and the host does not accept a tool list submitted by the client; the branch preamble's list comes directly from the constants; the guard's criterion is still to allow by list, its registration point is still inside `setup(agentCtx)`, and failing to obtain the guard is still fail-loud.
    ⚠️ The "guard's criterion" in this item is a **source-level regex assertion**, not an actual driven interception — real interception needs end-to-end (see below);
 3. the client bundle exists, the inject is still those five service names, and there are no debug exports;
 4. the package names in `package.json` and `cordis.patch.yml` match;
-5. every package in `dsh.client.inject` really exists in the local DSH installation directory (give the path with `DSH_INSTALL_DIR`; if it cannot be found, skip this item).
+5. every package in `dsh.client.inject` really exists in the local DSH installation directory (give the path with `DSH_INSTALL_DIR`; if it cannot be found, skip this item);
+6. **the archive-gate countermeasure**: the unlock must come before `followup`, must be feature-detected with `typeof`, and must not throw; the re-hide must hang off `finishJob`, use a bounded backoff, and equally must not throw; creation must still archive first. This section guards the "one published version serves both 0.1.5 and 0.1.7" line.
 
 It does **not** verify answer quality, real guard interception, SSE behaviour or the interface. End-to-end verification needs:
 
@@ -126,4 +133,12 @@ It does **not** verify answer quality, real guard interception, SSE behaviour or
 3. select text on the page, open the panel, ask a question;
 4. check the startup log for lines with the `[side-branch]` prefix.
 
-There is no end-to-end test suite in the repository. When changing the guard, the prompt prefix or the SSE spots, steps 2 to 4 must be run manually.
+There is no end-to-end test suite in the repository. When changing the guard, the prompt prefix, the model-facing text (`PROMPT_TEXT`), the archive gate or the SSE spots, steps 2 to 4 must be run manually.
+
+## Committing and pushing
+
+- **Commit messages are always in English.** This is a public repository and its history is read in English: use `type: imperative subject` (e.g. `fix: un-archive the side session before each turn`) and explain "why" in the body. Do not mix Chinese into it.
+- Prefer two commits: one for the `lib/` + `scripts/` behaviour change, one for documentation / version bumps.
+- **Before pushing**, run `node scripts/smoke.mjs` (previous section) and run the affected path manually in a real host.
+- Keep the version in `package.json` and `docs/CHANGELOG.md` in sync; tag releases as `v<version>` (`v0.1.0` exists).
+- Remote: `origin` = `github.com/wucl12/dsh-side-branch`, main branch `main`.

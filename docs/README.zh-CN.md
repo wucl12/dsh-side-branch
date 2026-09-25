@@ -9,7 +9,7 @@
 * **包名 (底层实现):** `dsh-side-branch`
 * **UI 名称 (界面显示):** 临时会话 (Side Ask)
 * **前置要求:** Node.js ≥ 20，且本机 `PATH` 环境变量中已安装 `pnpm`
-* **已验证 DSH 版本:** `0.1.5-rc.2`
+* **已验证 DSH 版本:** `0.1.5-rc.2` 与 `0.1.7-rc.2`
 
 <p align="center">
   <img src="../assets/sidebar-guide.png" alt="右侧栏引导页里的「临时会话」入口" width="600">
@@ -17,6 +17,10 @@
 
 <p align="center">
   <img src="../assets/selection-entry.png" alt="划选文本入口" width="600">
+</p>
+
+<p align="center">
+  <img src="../assets/panel-answering.png" alt="面板流式回答" width="600">
 </p>
 
 ## 💡 为什么造这个轮子？（设计初衷）
@@ -42,9 +46,6 @@
 * **极致的流式体验：** 正文与推理过程（可折叠的“思考”行）逐词流式输出。即使关闭浏览器标签，后台回答也不会中断，重新打开即可续接。
 * **会话状态持久化：** 面板状态按「会话 + 面板格」本地持久化。闲置自动休眠，下次提问静默唤醒。
 
-<p align="center">
-  <img src="../assets/panel-answering.png" alt="面板流式回答" width="600">
-</p>
 
 ## 📦 安装与启用
 

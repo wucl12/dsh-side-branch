@@ -10,7 +10,7 @@ Typical use: ask a follow-up question, look up a term, or explore an idea *along
 | --- | --- |
 | **Package name** (implementation) | `dsh-side-branch` |
 | **UI name** (what you see) | **Side Ask** · 中文「临时会话」 |
-| **Verified DSH version** | `0.1.5-rc.2` |
+| **Verified DSH version** | `0.1.5-rc.2` and `0.1.7-rc.2` (see "Archived sessions" below) |
 | **Prerequisites** | Node.js ≥ 20 and `pnpm` on your `PATH` |
 | **Runtime dependencies** | none — no build step, no third-party packages |
 | **License** | MIT |
@@ -138,6 +138,18 @@ Closing the browser tab does not interrupt an in-flight answer; come back to the
 
 **Settings live in the browser.** This plugin's namespace does not appear in the official settings page, and that is a deliberate trade-off: going through the official settings service would require the platform-internal `schemastery` package, which is not resolvable from the plugin workspace. Settings are therefore persisted in client `localStorage`, with the host only validating them.
 
+**Archived sessions, and why the branch is un-archived before every turn.** A side session is a real DSH session, so without help it would show up as an extra row in the sidebar. To keep the list clean the plugin *archives* it the moment it is created — archiving hides a session from the grouping surfaces without deleting it.
+
+Starting with DSH **`0.1.7-rc.1`** an archived session also becomes *unrunnable*: `dsh-api-session-controller` composes an `ArchivedSessionGate` whose `agent/pre-step` listener rejects any model step proposed for an archived session, and `dsh-agent-loop` ends that turn as `turn/end { reason: 'blocked' }` **without sending a model request**. A plugin that archives its own session would therefore block itself on every single turn.
+
+The plugin's answer is a three-step cycle, all of it tolerant of failure:
+
+1. **On creation** — archive, so an idle branch is hidden.
+2. **Immediately before each turn is delivered** (`followup`) — call `workspaceRegistry.unarchiveSession()`, lifting the gate for that turn.
+3. **When the turn settles** — archive again, so an idle branch is hidden again. The registry refuses to archive a session that still has activity, so this step waits and retries on a bounded backoff; if it never succeeds the only consequence is that the branch stays visible in the sidebar.
+
+`unarchiveSession()` only exists from DSH **`0.1.6-alpha.2`**; the call site is feature-detected, so on `0.1.5-rc.2` (no gate, no method) both extra steps are no-ops and behaviour is unchanged. This is what lets one published version serve both DSH lines.
+
 ## 🛡️ How read-only is guaranteed
 
 Read-only is enforced by the **execution layer**, not by asking the model nicely in a prompt.
@@ -197,7 +209,7 @@ Measured: in a PTC parent session the PTC preamble applied from the first round,
 - Each branch has a context ceiling. On reaching it, the plugin refuses to send and shows the actual usage instead of silently dropping the oldest turns.
 - With a `ptc` main session the branch **cannot use a single tool** (the only visible entry, `run_code`, is always denied). A custom preset saved from the PTC template also defeats the opening-time detection, wasting the first round.
 - After being denied by the guard, the model often **retries the same tool**, wasting a round. This is independent of PTC mode and was observed in both.
-- Only DSH `0.1.5-rc.2` has been verified. Parts of the ecosystem have already moved on to `0.1.7-rc.x`; this plugin has not been verified on `0.1.6` or `0.1.7`.
+- Verified on DSH `0.1.5-rc.2` (before the archive gate) and `0.1.7-rc.2` (with it). `0.1.6-alpha.2` was checked by reading its published packages only — it already has `unarchiveSession` and does **not** yet have `ArchivedSessionGate`, so the feature-detected path keeps it working — but no end-to-end run was done there.
 - The MCP tool conclusion comes from reading the code path, not from a live test (`run_code` was tested live).
 - The effect of the branch preamble on model behaviour has not been quantified. It asks the model to say "this needs the main session" when it would have to read a file to answer; whether that makes the model overly conservative needs human judgement.
 

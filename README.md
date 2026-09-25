@@ -9,7 +9,7 @@ Core Scenario: Asking follow-up questions, looking up terms, or exploring ideas 
 * **Package Name (Implementation):** `dsh-side-branch`
 * **UI Name (Display):** Side Ask
 * **Prerequisites:** Node.js ≥ 20, and `pnpm` installed in the local `PATH`.
-* **Verified DSH Version:** `0.1.5-rc.2`
+* **Verified DSH Version:** `0.1.5-rc.2` and `0.1.7-rc.2`
 
 <p align="center">
   <img src="assets/sidebar-guide.png" alt="The Side Ask entry in the right sidebar guide" width="600">
@@ -17,6 +17,10 @@ Core Scenario: Asking follow-up questions, looking up terms, or exploring ideas 
 
 <p align="center">
   <img src="assets/selection-entry.png" alt="Selection Entry" width="600">
+</p>
+
+<p align="center">
+  <img src="assets/panel-answering.png" alt="Panel Answering" width="600">
 </p>
 
 ## 💡 Why Build This? (Motivation)
@@ -42,9 +46,6 @@ This project strictly chooses to enforce read-only at the **execution layer**. T
 * **Ultimate Streaming Experience:** Text and reasoning processes (collapsible "Thinking" rows) are streamed token-by-token. Background generation won't interrupt even if the browser tab is closed.
 * **Persistent Session State:** Panel states are persisted locally per "Session + Panel Grid". Automatically sleeps when idle and silently wakes up on the next query.
 
-<p align="center">
-  <img src="assets/panel-answering.png" alt="Panel Answering" width="600">
-</p>
 
 ## 📦 Installation & Setup
 
