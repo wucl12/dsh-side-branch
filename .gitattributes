@@ -1,0 +1,7 @@
+# 仓库内的文本一律按 LF 提交/检出，避免 Windows 上 core.autocrlf 产生整文件 diff。
+# 二进制截图不做任何转换。
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
