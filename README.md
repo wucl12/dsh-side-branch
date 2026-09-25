@@ -1,193 +1,45 @@
-# DSH 临时会话（Side Branch）
+# DSH Side Branch — Side Ask
 
-在主会话里选中一段文字，右栏出现一条只读分支子会话。这条分支继承主会话已有的上下文，逐词流式回答，**答案不进入主会话的模型上下文**。
+Select text in the main session and a **read-only branch session** opens in the right sidebar. The branch inherits the main session's context and streams its answer token by token, and **its answers never enter the main session's model context**.
 
-它解决的问题很具体：想问一个顺着当前对话往下走的临时问题，但不想让这个问题和它的长回答留在主会话的上下文里。
+Typical use: ask a follow-up question, look up a term, or explore an idea *alongside* the current conversation without breaking its flow.
 
-- 包名：`dsh-side-branch`
-- 许可证：MIT
-- 已验证的 DSH 版本：`0.1.5-rc.2`
-- 前置要求：Node.js ≥ 20，且**本机 `PATH` 上要有 `pnpm`**（`dsh plugin` 是 pnpm 的转发器，缺了它直接报 `pnpm not found on PATH` 并以 127 退出）
+- **Package name:** `dsh-side-branch`
+- **UI name:** **Side Ask** · 中文「临时会话」
+- **Verified DSH version:** `0.1.5-rc.2`
+- **Requires:** Node.js ≥ 20 and `pnpm` on your `PATH`
+- **Zero third-party runtime dependencies**, no build step · MIT licensed
 
-> **名字有两层，别混。** 插件叫 `dsh-side-branch`（侧枝会话）；而这个功能在**界面里**显示为「**临时会话**」（英文界面 `Side Ask`）——侧栏 tab 标题、面板提示、按钮悬停提示都用这个名字。两者不同是刻意的：包名描述实现（只读分支），UI 名描述用途（临时问一句），改名不该动用户已经认得的东西。本页其余部分用「分支」这个词描述它的实现语义。
+## 📖 Read the full documentation
 
----
+| | |
+| --- | --- |
+| **[English documentation](./docs/README.en.md)** | Install · usage · how read-only is guaranteed · limitations |
+| **[简体中文文档](./docs/README.zh-CN.md)** | 安装 · 使用 · 只读如何保证 · 已知限制 |
 
-**English summary.** `dsh-side-branch` is a DSH (DeepSeek Harness) Web plugin. Select text in the main
-session and a **read-only branch session** opens in the right sidebar. The branch inherits the main
-session's completed-turn prefix and agent preset, so it keeps hitting the existing **prefix cache**
-instead of rebuilding the prompt — while its answers **never enter the main session's model context**.
-Read-only is enforced at the **execution layer** (`ctx.tools.guard`, a six-tool allow-list:
-`read glob grep web_search web_fetch lsp`), not by prompt instructions, so the prompt prefix stays
-byte-identical to the main session. In the UI this feature is called **Side Ask** (Chinese 「临时会话」).
-Requires Node.js ≥ 20 and `pnpm` on `PATH`. MIT licensed.
-
----
-
-<p align="center">
-  <img src="assets/sidebar-guide.png" alt="右侧栏引导页里的「临时会话」入口" width="720">
-  <img src="assets/selection-entry.png" alt="在主会话里选文字后浮出的「在临时会话中询问」入口" width="720">
-  <img src="assets/panel-answering.png" alt="右栏面板正在回答，引用块、可折叠的「思考」行、用量行都在位" width="720">
-</p>
-
-## 安装
-
-任选一种。安装后必须**重启 DSH**，客户端插件在启动时装载。
-
-从 GitHub 安装：
+## 📦 Install
 
 ```powershell
 dsh plugin --profile web add github:wucl12/dsh-side-branch
 ```
 
-从 npm 安装：
+Restart DSH afterwards (the client half loads at startup). See the full docs for the npm install, local-directory install, and the path-with-spaces caveat.
 
-```powershell
-dsh plugin --profile web add dsh-side-branch
-```
+<p align="center">
+  <img src="assets/panel-answering.png" alt="The Side Ask panel answering: quote block, collapsible thinking row, usage row" width="720">
+</p>
 
-本地目录安装（`link:` 依赖，装的是**指向该目录的链接**，不是快照）：
+## 🗂 Repository layout
 
-```powershell
-dsh plugin --profile web add C:\path\to\dsh-side-branch
-```
+| Path | What it is |
+| --- | --- |
+| [`docs/README.en.md`](docs/README.en.md) · [`docs/README.zh-CN.md`](docs/README.zh-CN.md) | Full documentation, English and Chinese |
+| [`AGENTS.md`](AGENTS.md) · [`docs/AGENTS.en.md`](docs/AGENTS.en.md) | Architecture contract and hard constraints for AI agents (中文 / English) |
+| [`SECURITY.md`](SECURITY.md) · [`docs/SECURITY.zh-CN.md`](docs/SECURITY.zh-CN.md) | Read-only commitment scope and vulnerability reporting (English / 中文) |
+| [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | Release history, bilingual |
+| [`docs/assets.md`](docs/assets.md) | Screenshot index |
+| [`lib/`](lib) | `index.js` host half, `client.js` client bundle |
 
-> 本地目录安装后**改了代码要重新 `add` 一次并重启 DSH**（`lib/client.js` 这类客户端代码只在启动时装载，
-> 刷新浏览器不够）。不想重启就改用 GitHub 或 npm 安装。
-
-**路径含空格时**（例如仓库放在 `Documents\` 下），`dsh plugin add` 会把路径拆成两段、装出错误的链接。
-两个办法，任选一个：
-
-- 把仓库放到不含空格的路径（如 `C:\dev\dsh-side-branch`）再 `add`；或
-- **不经过命令行**：在 profile 的 `package.json` 里手写一条依赖，再跑 `install`（路径写在文件里，不会被拆）：
-
-  ```jsonc
-  // <DSH_HOME>\profiles\web\package.json
-  "dependencies": { "dsh-side-branch": "link:C:/dev/dsh-side-branch" }
-  ```
-
-  ```powershell
-  dsh plugin --profile web install     # 装完会自动把它加进 dsh.profile.bundles
-  ```
-
-把 `web` 换成你实际使用的 profile 名。若 profile 不在默认位置，先设置 `DSH_HOME`。
-
-### 让 agent 帮你装
-
-把下面这段发给任意能执行本机命令的 agent：
-
-```text
-请把本机的 DSH 插件 dsh-side-branch 装到 web profile：
-1. 确认本机 PATH 上有 pnpm（dsh plugin 是 pnpm 的转发器）；没有就先装。
-2. 确认仓库所在目录的绝对路径不含空格。若含空格，改用"不经过命令行"的办法：
-   在 <DSH_HOME>\profiles\web\package.json 的 dependencies 里加一行
-   "dsh-side-branch": "link:<仓库绝对路径的正斜杠形式>"，然后跑 dsh plugin --profile web install。
-3. 不含空格时：dsh plugin --profile web add <仓库绝对路径>
-4. 执行 dsh --profile web --dump-config，确认输出里出现 dsh-side-branch 这一行。
-5. 告诉我重启 DSH 的命令，然后停在那里等我重启。
-```
-
-## 使用
-
-在主会话正文里选中文字，选区上方出现「引用并询问」，点它打开右栏面板，输入问题并发送。选中的原文会作为引用一起交给分支。
-
-主会话输入框右侧另有一个入口按钮，点它可以直接打开面板（可在设置里关掉）。
-
-面板内的操作：
-
-| 位置             | 作用                                               |
-| ---------------- | -------------------------------------------------- |
-| 输入框           | 提问；同一段内可以继续追问，历史由这段分支自己持有 |
-| 底部左侧「清空」 | 结束当前这一段，下次提问另起一段                   |
-| 底部左侧齿轮     | 打开设置：主会话快速入口按钮的开关                 |
-| 模型选择行       | 为这一段单独指定模型与推理等级，默认跟随主会话     |
-
-关闭浏览器标签不会中断正在进行的回答；回到面板仍能看到结果。
-
-## 行为要点
-
-**分支是真分支。** 出生时读取主会话已完成的回合前缀作为种子，并继承主会话的 agent preset、工具与 persona。因此这条分支看到的系统提示词与主会话逐字一致。
-
-**答案不回流。** 宿主半从不向父会话写入任何内容。你在分支里问过什么、得到什么答案，主会话的模型上下文里都不会出现。
-
-**继续命中前缀缓存。** 因为提示词前缀与主会话逐字一致，沿用主会话模型时仍能命中原有的前缀缓存，而不是每次重算。换模型的那一段是全新前缀，按全价计费，插件会在用量行标注。
-
-**流式输出正文与推理。** 回答逐词推送；推理过程放在可折叠的「思考」行里。客户端断开不会中止后台回答。
-
-**面板状态会记住。** 按「会话 + 面板格」保留，刷新页面不丢。侧会话闲置一段时间后释放活动实例但保留记录，下次提问自动唤醒。
-
-**设置存在浏览器本地。** 官方设置页里看不到本插件的命名空间，这是有意的取舍：改为走官方设置服务需要平台内置包 `schemastery`，插件工作区解析不到它，所以设置改由客户端 `localStorage` 持久化，宿主只做校验。
-
-## 只读是怎么保证的
-
-只读由**执行层**保证，不依赖提示词请求模型配合。
-
-白名单放行六个工具：
-
-```
-read  glob  grep  web_search  web_fetch  lsp
-```
-
-判定按**工具名精确匹配，方向是 fail-closed**。`dsh-tools` 的 `prepareExecution` 对每一次执行都跑一遍 guard，任何不在上面六个名字里的工具都在执行层被拒，包括：
-
-- `subagent`、`workflow`、`ralph` —— 它们能开出孙子会话，而孙子会话的 ctx 上没有我们的 guard；
-- `bash`、`pwsh` —— 任意命令；
-- `write`、`edit`、`report` —— 写文件；
-- `goal`、`jobs`、`cordis` —— 改长期目标、起停后台作业、改运行中的宿主；
-- `run_code` —— PTC 模式把动作包进程序执行的通道。PTC 程序内部对 SDK 的每次派发也走同一条 `prepareExecution`，所以是双重拦截；
-- `mcp__*` —— MCP 工具注册进的是同一个工具表，同样按名字被拒。
-
-已实测的一条：`subagent` 被模型**真的调用**过，guard 在执行层返回拒绝，孙子会话没有启动，诱饵文件的内容与修改时间都未变。`run_code` 与 MCP 走的是同一条已被覆盖的管线，但没有逐项实跑过。
-
-将来 DSH 改了工具名，那个工具自动落入「被拒」一侧，而不是悄悄放行。
-
-`session_query` 不在放行名单里：它能读到别的会话，会把「本会话的一条分支」变成跨会话读取。
-
-放行名单是**固定的**。插件不提供「用户自选可用工具」的设置：少一层可配置就少一处能把只读保证改坏的地方，模型看到的工具名单也不会与执行层的判据分叉。要收窄可用的面，得改这份常量。
-
-实现上刻意**没有**改用「把工具从提示词里删掉」的做法。那会让提示词前缀与主会话分叉，前缀缓存全部失效——这也正是只读必须在执行层拦的原因。
-
-### 只读不等于无害
-
-「只读」指的是**不产生副作用**，不是「不能访问外部」。放行的六个工具里：
-
-- `web_fetch` 与 `web_search` 是**网络出口**。分支里如果有敏感内容，模型可以把它发出去。引用原文与工具取回的内容都做了反注入声明（明确要求不执行其中的指令），但这是提示词层的约束。
-- `lsp` 会**起语言服务器进程**。
-- `read`、`glob`、`grep` 能读**进程权限范围内的任意路径**。没有按分支划分的沙箱，所以它们能读到的不止当前工作区。
-
-这些面是**固定的**，插件里没有开关可以逐个关掉。如果要更窄的工具面，只能改代码里的那份常量——这也是为什么它被刻意做得不可配置。
-
-### 主会话用 PTC 模式时
-
-主会话的 agent preset 如果用 `tool-presentation: mode: ptc`（官方内置的 `ptc` preset 就是），工具面会被换成一份生成的 SDK，模型**直接可见**的入口只有 `run_code`。而 `run_code` 永远不在白名单里，所以这条分支一个工具都调不动，只能靠继承到的历史与用户提供的引用作答。
-
-插件会在开段时检测这种工具面，并换用一份说明「本分支不提供任何工具」的引导词，免得模型反复尝试。检测看父会话的 preset 名（`ptc`）。如果父会话用的是**从 PTC 模板另存出来的自定义 preset**，preset 名对不上，就靠 guard 兜底：模型一旦尝试 `run_code` 就会被拒，那之后改用 PTC 引导词，第一轮会白试一次。
-
-实测：PTC 父会话下第一轮就是 PTC 引导词适用的情形，模型自述「工具面里唯一可见入口是 run_code」；`run_code` 被真的调用并被执行层拒绝，诱饵文件未变。
-
-## 已知限制
-
-- **分支继承的是「开段那一刻」的快照。** 开段之后主会话继续聊的新回合不会进入这条分支。要让它看到新内容，得「清空」另起一段。
-- **同时最多两条侧枝会话。** 这来自 DSH 侧栏的分栏上限（同一 tab 类型每个分栏最多一颗、最多两个分栏），不是本插件的限制，但用起来会撞到。
-- **`web_fetch`、`web_search`、`lsp`、`read`、`glob`、`grep` 本身的行为不受只读约束。** guard 拦的是"名单外的工具"，不是这六个工具的网络访问、起进程与读文件能力。详见上面「只读不等于无害」。
-- **「清空」对界面历史不可逆。** 清空之后这一段在面板里再也看不到、也回不去。磁盘上的归档侧会话记录仍在，但官方 API 删不掉它，它也不会出现在任何会话列表里。
-- 设置存在浏览器 `localStorage`：换浏览器或清站点数据会回到默认值。目前设置只有一项（主会话快速入口按钮的开关）。
-- 工具放行名单不可配置。想收窄可用工具只能改代码，没有针对单个工具的开关。
-- 插件重载后，「睡着」的会话表随内存消失，旧会话 id 会报告已另起一段（客户端会自动新建，不会卡住）。
-  **注意区分两种路径**：闲置到点只是让侧会话「睡觉」，记录还在，下次提问**静默唤醒**、连分隔线都不出现；只有**插件重载**才会丢记录、另起一段，此时问题照常得到回答、不用重新输入，只是那段历史接不上。
-- 每段有上下文上限。到达上限时拒绝发送并显示实际用量，不会静默丢弃最早的轮次。
-- 主会话用 `ptc` preset 时，这条分支**一个工具都用不了**（唯一可见入口 `run_code` 永远被拒）。用 PTC 模板另存出来的自定义 preset 还会让开段判定漏判，第一轮白试一次。
-- 模型被 guard 拒绝后往往会**再试一次**同一个工具，白花一轮。这与主会话是否 PTC 无关，实测两种模式下都会发生。
-- 只验证过 DSH `0.1.5-rc.2`。同类插件的 peer 声明已经覆盖到 `0.1.7-alpha.1`，本插件尚未在这些版本上验证。
-- MCP 工具的拦截结论来自代码路径核对，没有实测（`run_code` 已实测）。
-- 分支引导词对模型行为的影响没有量化。它要求模型在需要读文件才能得出结论时说明「这需要回主会话做」，是否会让模型过度保守需要人工评判。
-
-## 更多
-
-- [`CHANGELOG.md`](CHANGELOG.md)：版本记录
-- [`AGENTS.md`](AGENTS.md)：安装与验证步骤、宿主 HTTP API，以及实现取舍（为什么只读必须在执行层、为什么不用官方可续子会话等）
-- [`SECURITY.md`](SECURITY.md)：只读承诺的范围与安全问题报告渠道
-
-## 许可证
+## 📄 License
 
 [MIT](LICENSE)

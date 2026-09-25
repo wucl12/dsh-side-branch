@@ -32,9 +32,10 @@
     "lib/index.js",
     "lib/client.js",
     "cordis.patch.yml",
+    "README.md",
     "AGENTS.md",
-    "CHANGELOG.md",
     "SECURITY.md",
+    "docs",
     "assets"
   ],
   "scripts": {

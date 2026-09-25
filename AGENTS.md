@@ -1,5 +1,7 @@
 # AGENTS.md
 
+[English](./docs/AGENTS.en.md) · 简体中文 · [仓库首页](./README.md)
+
 面向自动化 agent 的说明：如何安装、验证、以及改动这个插件时的硬约束。
 
 ## 这是什么

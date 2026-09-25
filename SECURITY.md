@@ -1,34 +1,30 @@
-# 安全说明
+# Security Policy
 
-本插件的核心承诺是**执行层只读**：侧枝会话可以调用六个只读工具，其余工具在**执行层**被拒绝
-（`ctx.tools.guard()`，判据是插件级常量 `ALLOWED_TOOLS` 的名字白名单，失配方向 fail-closed）。
+[中文](./docs/SECURITY.zh-CN.md) · English · [Repository home](./README.md)
 
-## 报告安全问题
+The core promise of this plugin is **execution-layer read-only**: a side branch may call six read-only tools, and every other tool is denied **at the execution layer** (`ctx.tools.guard()`, keyed on the plugin-level `ALLOWED_TOOLS` name allow-list, failing closed).
 
-用 GitHub 私有安全通告提交：<https://github.com/wucl12/dsh-side-branch/security/advisories/new>
+## Reporting a security issue
 
-请不要为**绕过只读**类问题开公开 issue。会在 7 天内回应。
+Use a GitHub private security advisory: <https://github.com/wucl12/dsh-side-branch/security/advisories/new>
 
-## 算安全问题的
+Please do **not** open a public issue for read-only bypasses. You will get a response within 7 days.
 
-- **guard 绕过**：任何能让侧枝会话执行白名单外工具（写文件、跑命令、开孙子会话、改宿主）
-  的路径，包括 `run_code`（PTC）与 `mcp__*` 工具。
-- **答案回流**：任何能让侧枝会话的回答进入主会话模型上下文的路径。
-- **宿主路由绕过**：不经过 `ctx.connection.requestRejection` 就访问 `/side-branch/*`，
-  或客户端能让宿主执行未校验输入（问题长度、模型标识、`conversationId` 归属）。
-- **客户端 XSS / 注入**：渲染答案或引用原文时执行脚本。
+## In scope
 
-## 不算安全问题的（设计上就是这样）
+- **Guard bypass**: any path that lets a side branch execute a tool outside the allow-list (writing files, running commands, spawning grandchild sessions, mutating the host), including `run_code` (PTC) and `mcp__*` tools.
+- **Answer leakage**: any path that gets a side branch's answer into the main session's model context.
+- **Host route bypass**: reaching `/side-branch/*` without passing `ctx.connection.requestRejection`, or making the host act on unvalidated input from the client (question length, model identifier, `conversationId` ownership).
+- **Client XSS / injection**: script execution while rendering an answer or quoted source text.
 
-这些在 README 的「只读不等于无害」和 `AGENTS.md` 的「为什么这样做」里都写了：
+## Out of scope (by design)
 
-- 放行的六个工具本身的能力：`web_fetch` / `web_search` 是**网络出口**（分支里的敏感内容可以被发出去）、
-  `lsp` 会**起语言服务器进程**、`read` / `glob` / `grep` 能读**进程权限范围内的任意路径** ——
-  没有按分支划分的沙箱。
-- 引用原文与工具取回的外部内容里的提示词注入。插件做了反注入声明，但那是**提示词层**的约束，
-  不是执行层的。
-- 放行名单不可配置（要收窄只能改代码）。这是刻意的取舍，理由同上。
+These are documented in the README's "Read-only is not harmless" section and in [`AGENTS.md`](./AGENTS.md):
 
-## 支持的版本
+- The capabilities of the six allow-listed tools themselves: `web_fetch` / `web_search` are **network egress** (sensitive content in a branch can be sent out), `lsp` **starts language-server processes**, and `read` / `glob` / `grep` can read **any path the process can reach** — there is no per-branch sandbox.
+- Prompt injection inside quoted source text or fetched external content. The plugin emits anti-injection declarations, but that is a **prompt-layer** constraint, not an execution-layer one.
+- The allow-list not being configurable (narrowing it means editing code). This is a deliberate trade-off, for the reasons above.
 
-只对最新发布版本提供修复。插件在 README 声明的 DSH 版本上验证过。
+## Supported versions
+
+Fixes are provided for the latest released version only. The plugin is verified on the DSH version declared in the README.
