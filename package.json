@@ -1,0 +1,63 @@
+{
+  "name": "dsh-side-branch",
+  "version": "0.1.0",
+  "description": "DSH 侧枝会话：从主会话派生一条只读分支，继承已有上下文与预设以继续命中前缀缓存，答案不进入主会话的模型上下文。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "side-chat",
+    "side-branch",
+    "read-only",
+    "prefix-cache"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wucl12/dsh-side-branch.git"
+  },
+  "homepage": "https://github.com/wucl12/dsh-side-branch#readme",
+  "bugs": {
+    "url": "https://github.com/wucl12/dsh-side-branch/issues"
+  },
+  "author": "Chenglin Wu",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "assets"
+  ],
+  "scripts": {
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-api-remotes"
+      ]
+    }
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2"
+  }
+}

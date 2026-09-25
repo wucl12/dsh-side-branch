@@ -1,0 +1,11 @@
+# dsh-side-branch 的 bundle patch。
+#
+# 语义（依据 @deepseek-ai/dsh-base/cordis.patch.yml 的头部注释）：
+# 每个 bundle 的 patch 是一次顶层数组 patch，按顺序叠加在 profile 根（空列表）之上。
+# - insert: 往条目列表里插入新行。
+# - id:     这一行在本 profile 组合树里的身份（后续 bundle 与用户的 patch 靠它定位）。
+# - name:   模块 specifier。**必须是真实包名**，scoped 的要带 scope。
+#           写成短名 / 错名会在加载期 ERR_MODULE_NOT_FOUND。
+- insert:
+    - id: dsh-side-branch
+      name: 'dsh-side-branch'
