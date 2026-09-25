@@ -8,7 +8,9 @@
  *   ③ guard 的形状没被改坏 —— 这一项是**源码级正则断言**（见下），不是真的拦截验证；
  *   ④ 客户端 bundle 存在、inject 仍是那五个服务名、不含调试导出；
  *   ⑤ `package.json` 与 `cordis.patch.yml` 的包名一致，且 `dsh.client.inject` 里
- *      每个包名在本机 DSH 安装目录里真实存在（用 `DSH_INSTALL_DIR` 指定路径，找不到就跳过）。
+ *      每个包名在本机 DSH 安装目录里真实存在（用 `DSH_INSTALL_DIR` 指定路径，找不到就跳过）；
+ *   ⑥ **归档闸对策**的形状没被改坏（DSH ≥ 0.1.7-rc.1 会拒掉已归档会话的模型步，
+ *      本插件靠归档来隐藏侧会话 ⇒ 必须"跑前解锁、跑完回藏"，且解锁必须**特性探测**）。
  *
  * ⚠️ 它**不验证**回答质量、真实 guard 拦截、SSE 逐词流式与界面 —— 那些必须在真宿主里跑。
  *
@@ -100,8 +102,21 @@ check(
 	'宿主不接受客户端提交的工具名单（名单不可配置）',
 )
 check(
-	/return fill\(T\.notice, \{ tools: TOOL_CHOICES\.join\(' \/ '\) \}\)/.test(hostSource),
+	/return fill\(PROMPT_TEXT\.notice, \{ tools: TOOL_CHOICES\.join\(' \/ '\) \}\)/.test(hostSource),
 	'分支引导词的工具名单直接来自常量',
+)
+// ★ 推给模型的文本一律英文，且**只写一份**（`PROMPT_TEXT`），zh/en 两张表都只是引用它。
+// 这一节同时守住两件事：别把引导词 / 拒绝理由翻译回中文；别在两张表里各写一份导致漂移。
+const promptBlock = /const PROMPT_TEXT = \{[\s\S]*?\n\}/.exec(hostSource)?.[0]
+const promptCode = (promptBlock ?? '').replace(/\/\/[^\n]*/g, '')
+check(promptBlock !== undefined, 'PROMPT_TEXT 存在（模型可见文本的唯一来源）')
+check(
+	promptCode !== '' && !/[\u4e00-\u9fff]/.test(promptCode),
+	'PROMPT_TEXT 全是英文（引导词 / PTC 变体 / 拒绝理由不随界面语言）',
+)
+check(
+	(hostSource.match(/PROMPT_TEXT\.(notice|ptcNotice|denyReason)/g) ?? []).length >= 6,
+	'zh/en 两张表都引用 PROMPT_TEXT（不各写一份）',
 )
 // 放行名单从**两个方向**守住：常量本身那六个名字（上面），以及 guard 只有一个判据。
 check(!/allowedTools|conv\.tools|SETTINGS_FIELD_TOOLS/.test(hostSource), '宿主没有"按段/按设置"的工具名单残留（判据只有插件级常量）')
@@ -127,6 +142,48 @@ check(
 )
 const guardSites = (hostSource.match(/const tools = softGet\(agentCtx, 'tools'\)/g) ?? []).length
 check(guardSites >= 2, `开段与唤醒两条路径都重新挂 guard（找到 ${guardSites} 处）`)
+
+// ─────────────────────────────────────────── 归档闸对策（DSH ≥ 0.1.7-rc.1）
+// 0.1.7-rc.1 起 `dsh-api-session-controller` 的 `ArchivedSessionGate` 会拒掉**已归档会话**的任何
+// 模型步（pre-step ⇒ reject ⇒ 轮次以 `reason: 'blocked'` 收口，连模型请求都不发出）。
+// 本插件用"归档"把侧会话从会话列表里藏起来 ⇒ 必须"跑前解锁、跑完回藏"。
+// ⚠️ `unarchiveSession` 是 **0.1.6-alpha.2** 才出现的方法：**硬调会让 0.1.5-rc.2 抛错**，
+//    所以这一节同时守住"必须特性探测"这条兼容性红线。
+const releaseBody = /async function releaseArchiveGate\(conv\) \{[\s\S]*?\n\}/.exec(hostSource)?.[0]
+const rehideBody = /async function rehideAfterTurn\(conv\) \{[\s\S]*?\n\}/.exec(hostSource)?.[0]
+const finishBody = /function finishJob\(job\) \{[\s\S]*?\n\}/.exec(hostSource)?.[0]
+check(
+	/typeof registry\.unarchiveSession === 'function'/.test(hostSource),
+	'unarchiveSession 经特性探测后才调用（0.1.5-rc.2 没有这个方法）',
+)
+check(releaseBody !== undefined, 'releaseArchiveGate 存在')
+check(rehideBody !== undefined, 'rehideAfterTurn 存在')
+check(
+	releaseBody !== undefined && /unarchiveSession\(conv\.childId\)/.test(releaseBody),
+	'开跑前解锁：releaseArchiveGate 调 unarchiveSession(childId)',
+)
+check(
+	releaseBody !== undefined && !/\bthrow\b/.test(releaseBody),
+	'解锁失败只记日志不抛（这一轮照常尝试，真实原因回到面板）',
+)
+check(
+	rehideBody !== undefined && !/\bthrow\b/.test(rehideBody) && /ARCHIVE_RETRY_DELAYS_MS/.test(rehideBody),
+	'跑完回藏：rehideAfterTurn 有界退避重试且不抛（归档要求会话空闲）',
+)
+check(
+	finishBody !== undefined && /rehideAfterTurn\(conv\)/.test(finishBody),
+	'回藏挂在 finishJob（单轮所有终态的唯一收尾路径，不会漏）',
+)
+const unlockAt = hostSource.indexOf('await releaseArchiveGate(conv)')
+const followupAt = hostSource.indexOf('conv.child.followup(')
+check(
+	unlockAt > 0 && followupAt > 0 && unlockAt < followupAt,
+	'解锁排在 followup 之前（顺序反了＝没解锁，0.1.7 上照样被闸）',
+)
+check(
+	/await registry\.archiveSession\(childId\)/.test(hostSource),
+	'建段仍然先归档（空闲时侧会话不出现在会话列表/工作区里）',
+)
 
 // ─────────────────────────────────────────── 路由与事件契约
 // 路径在、方法不对 ⇒ 405 + `Allow`（不是 404）。六条路由一个都不能从表里掉。
