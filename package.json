@@ -37,8 +37,10 @@
     "SECURITY.md",
     "docs",
     "assets"
-  ],  "scripts": {
-    "smoke": "node scripts/smoke.mjs"
+  ],
+  "scripts": {
+    "smoke": "node scripts/smoke.mjs",
+    "prepublishOnly": "node scripts/smoke.mjs"
   },
   "dsh": {
     "bundle": {
