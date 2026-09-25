@@ -37,8 +37,7 @@
     "SECURITY.md",
     "docs",
     "assets"
-  ],
-  "scripts": {
+  ],  "scripts": {
     "smoke": "node scripts/smoke.mjs"
   },
   "dsh": {

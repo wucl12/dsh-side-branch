@@ -1,6 +1,6 @@
 # 安全说明
 
-[English](../SECURITY.md) · 简体中文 · [返回仓库首页](../README.md)
+[English](../SECURITY.md) · 简体中文 · [README](./README.zh-CN.md)
 
 本插件的核心承诺是**执行层只读**：侧枝会话可以调用六个只读工具，其余工具在**执行层**被拒绝
 （`ctx.tools.guard()`，判据是插件级常量 `ALLOWED_TOOLS` 的名字白名单，失配方向 fail-closed）。

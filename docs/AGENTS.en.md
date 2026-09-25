@@ -1,6 +1,6 @@
 # AGENTS.md — Installation, Verification and Hard Constraints
 
-[English](./AGENTS.en.md) · [简体中文](../AGENTS.md) · [Repository home](../README.md)
+[English](./AGENTS.en.md) · [简体中文](../AGENTS.md) · [README](../README.md)
 
 Notes for automated agents: how to install and verify this plugin, and the hard constraints on changing it.
 

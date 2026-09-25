@@ -1,6 +1,6 @@
 # DSH Side Branch — Side Ask
 
-**English** · [简体中文](./README.zh-CN.md) · [Repository home](../README.md)
+**English** · [简体中文](./TECHNICAL.zh-CN.md) · [README](../README.md)
 
 Select text in the main session and a **read-only branch session** opens in the right sidebar. The branch inherits the main session's context and streams its answer token by token — and **its answers never enter the main session's model context**.
 
@@ -203,6 +203,7 @@ Measured: in a PTC parent session the PTC preamble applied from the first round,
 
 ## 📚 More documentation
 
+- [`README.md`](../README.md) / [`README.zh-CN.md`](./README.zh-CN.md): the short overview, English and Chinese.
 - [`AGENTS.md`](../AGENTS.md) / [`AGENTS.en.md`](./AGENTS.en.md): the architecture contract and hard constraints, written for AI agents — read it before any secondary development (Chinese / English).
 - [`SECURITY.md`](../SECURITY.md) / [`SECURITY.zh-CN.md`](./SECURITY.zh-CN.md): the scope of the read-only commitment and the vulnerability reporting channel (English / Chinese).
 - [`CHANGELOG.md`](./CHANGELOG.md): release history, bilingual.

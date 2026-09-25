@@ -1,6 +1,6 @@
 # Changelog
 
-[中文](#中文版本记录) · English
+[中文](#中文版本记录) · English · [README](../README.md)
 
 ## 0.1.0
 

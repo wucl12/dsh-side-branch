@@ -1,6 +1,6 @@
 # Screenshots / 截图
 
-Referenced by [`README.en.md`](./README.en.md) (English) and [`README.zh-CN.md`](./README.zh-CN.md) (中文)，以及仓库首页 [`README.md`](../README.md)。
+Referenced by [`README.md`](../README.md) (English) and [`README.zh-CN.md`](./README.zh-CN.md) (中文)。
 
 | File | What it shows | 说明 |
 | --- | --- | --- |
