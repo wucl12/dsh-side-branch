@@ -47,7 +47,7 @@ This plugin enforces read-only in the **execution layer** instead (`ctx.tools.gu
 ## ✨ Core features
 
 - **True branch, zero pollution.** The host half never writes anything back to the parent session. Whatever you ask — and whatever the branch answers — never appears in the main session's model context.
-- **Prefix-cache hits stay intact.** The branch seeds itself from the main session's *completed-turn* prefix. Reusing the main session's model keeps hitting the existing prefix cache instead of rebuilding the prompt.
+- **Prefix-cache hits stay intact.** The branch seeds itself from the main session's *completed-turn* prefix (re-taken on every follow-up — see "Re-fork" below). Reusing the main session's model keeps hitting the existing prefix cache instead of rebuilding the prompt.
 - **Read-only at the execution layer.** The security boundary does not depend on the prompt. `ctx.tools.guard` allows exactly six side-effect-free query tools (`read`, `glob`, `grep`, `web_search`, `web_fetch`, `lsp`); everything else — writing files, running commands, spawning child sessions — is denied at execution time.
 - **Streaming that survives the tab.** Body text and reasoning stream token by token (reasoning lives in a collapsible "Thinking" row). Closing the browser tab does not interrupt the answer in the background; reopen and the result is there.
 - **Persistent panel state.** Panel state is kept locally per *session + panel pane*. Idle side sessions go to sleep, release their live instance, keep their record, and wake silently on the next question.
@@ -126,11 +126,11 @@ Closing the browser tab does not interrupt an in-flight answer; come back to the
 
 ## 🧭 Behaviour notes
 
-**The branch is a real branch.** At birth it reads the main session's completed-turn prefix as a seed, and inherits the main session's agent preset, tools and persona. The system prompt this branch sees is byte-identical to the main session's.
+**The branch is a real branch.** At birth it reads the main session's completed-turn prefix as a seed, and inherits the main session's agent preset, tools and persona. The system prompt this branch sees is byte-identical to the main session's. ★ **Every follow-up rebuilds it from the main session's *latest* settled prefix** while keeping the branch's own questions and answers (see "Re-fork" below).
 
 **Answers never flow back.** The host half never writes anything to the parent session. Nothing you ask, and nothing it answers, appears in the main session's model context.
 
-**Prefix-cache hits continue.** Because the prompt prefix matches the main session's word for word, reusing the main session's model keeps hitting the existing prefix cache instead of recomputing it every time. A branch on a different model is a fresh prefix billed at full price; the plugin marks that in the usage row.
+**Prefix-cache hits continue.** Because the prompt prefix matches the main session's word for word, reusing the main session's model keeps hitting the existing prefix cache instead of recomputing it every time. A branch on a **different** model is a different cache sequence on the provider side (however similar the prefix looks), so that segment is essentially billed at full price; the plugin marks that in the usage row.
 
 **Streaming, body and reasoning.** Answers are pushed token by token; reasoning sits in a collapsible "Thinking" row. A disconnecting client does not abort the background answer.
 
@@ -149,6 +149,100 @@ The plugin's answer is a three-step cycle, all of it tolerant of failure:
 3. **When the turn settles** — archive again, so an idle branch is hidden again. The registry refuses to archive a session that still has activity, so this step waits and retries on a bounded backoff; if it never succeeds the only consequence is that the branch stays visible in the sidebar.
 
 `unarchiveSession()` only exists from DSH **`0.1.6-alpha.2`**; the call site is feature-detected, so on `0.1.5-rc.2` (no gate, no method) both extra steps are no-ops and behaviour is unchanged. This is what lets one published version serve both DSH lines.
+
+## 🔁 Re-fork and multi-segment answers
+
+### The rule in one line
+
+Every follow-up sends the model:
+
+```text
+[ the main session's latest "settled prefix" ]   ← re-taken on every rebuild
++ [ this branch's own questions and answers ]    ← replayed in, verbatim
++ [ this turn's new question ]
+```
+
+The "settled prefix" is everything in the main session's event log **before the last `turn/end`** — the turns the main session has **finished and closed out**. A turn the main session is **still generating** does not enter the seed.
+
+### When a rebuild happens (the triggers)
+
+`shouldReFork` tests two conditions, and **either one** triggers a rebuild:
+
+1. **the main session has settled a new turn** — the main session's current settled-prefix length is greater than the `parentCut` recorded when this segment was created;
+2. **the model or the reasoning effort changed** — a `reasoningEffort`-only change counts too.
+
+If neither holds (the main session has not grown and the model is unchanged) the **current segment is reused**: the seed would be byte-identical, so rebuilding would only add one more session record the platform cannot delete plus one deep copy, for exactly the same cache hits.
+
+The rebuild is `reForkConversation`: create a fresh side session (seeded from the main session's **latest** prefix) → replay the previous segment's **own** events into it → release the previous segment only **after the replay succeeded**. If it fails, the turn is **refused explicitly** with `side-branch/refork-failed` and the **previous segment is left exactly as it was** (never a silent downgrade to "a new session with no history" — the model would think the branch had never been asked anything while the panel still shows the old answers).
+
+Because a rebuild creates a new side session, **`conversationId` changes whenever a rebuild happens**; `POST /side-branch/start` always answers `handoff: true`, so the panel does **not** draw a "a new segment starts here" divider — the history really is continuous.
+
+The cache trade-off: the newly added content is the part the main session **just requested itself**, so it is probably still in the provider's hot cache, and the rebuilt request prefix lines up with it exactly (a cache read); under "frozen prefix + append", that same content is sent by this branch in that shape for the **first** time (a cache write).
+
+### The replay discipline (read this before touching the code)
+
+Only the **5 event types that can enter the model-visible history** are `append`ed into the new session, verbatim:
+
+```text
+system/message   developer/message   user/message   assistant/message   tool/result
+```
+
+- **Only `event.data` is passed, verbatim.** An `assistant/message` embeds the **real provider stream** and `message.source.provider/model`; hand-building one is rejected by `dsh-session`'s shape checks.
+- **Pure log events are never replayed** (`turn/start`, `step/start`, `tool/call`, `request/header`, …): `append`ing them throws.
+- ⛔ **Never "helpfully" fill in `event.sourceEventSeqs`**: a `tool/result` carries `[the old session's callSeq]` at the **event level**, and copying it over trips `sourceEventSeqs must reference earlier events` (a foreign sequence number is very likely ≥ the new session's seq). Passing only `data` drops it naturally — and `append` does not need it anyway.
+- **No truncation**: at the context limit the turn is refused; the earliest turns are never silently dropped.
+
+### Multi-segment answers: every step of a turn is kept
+
+A turn can contain several steps ("talk while working"), and **every step opens a new streaming attempt and emits its own `start` frame**. The branch keeps an **ordered segment array**:
+
+```text
+job.segments = [ { kind: 'reasoning'|'text'|'tool', text, turn, step }, … ]
+```
+
+- `start` frames are split by `turn`/`step`: **the same step with a new `attemptId`** is a **retry inside that step** (only that step's segments are dropped, and a `reset` is emitted); **a changed `turn`/`step`** means **a new segment** (a `segment` frame is emitted, and nothing old is ever deleted).
+- `chunk` (`text-delta` / `reasoning-delta`) and `tool/call` append to the **current segment**; the terminal text from `assistant/message` **replaces only the current segment** (and only when it is non-empty, so a tool-only final step cannot leave a middle segment displayed as the final answer).
+- The `job.text` / `job.reasoning` shortcuts are **pure functions** of the segment array (`syncSegmentShortcuts`) ⇒ they cannot drift from it, and there is no "second source of truth".
+
+The complete SSE event and payload list:
+
+| Event | When | Payload |
+| --- | --- | --- |
+| `snapshot` | once, when a client (re)connects | `{ status, text, reasoning, segments, conversationId, stats? }` |
+| `segment` | entering the next step (a new segment) | `{ turn, step }` |
+| `delta` | answer-text increment | `{ text, turn, step }` |
+| `reasoning` | reasoning increment | `{ text, turn, step }` |
+| `reset` | retry inside the same step (drops only that step) | `{ turn, step }` |
+| `replace` | terminal text replacing **the current segment** | `{ text, turn, step }` |
+| `tool` | an allow-listed tool was **executed** (tool name only, never the arguments) | `{ name, count, turn, step }` |
+| `done` / `stopped` / `error` | terminal states | `{ status, text, reasoning, segments, conversationId, stats?, error? }` |
+
+The client persists `segments` along with the round (`turn`/`step` included — they are tiny) and renders them in array order after a refresh; when **old data has no `segments`** they are synthesised from `answer`/`reasoning` (`normalizeSegments`) ⇒ an old panel does not come back empty after a refresh.
+
+### What was inherited, and what was injected (layer 1 / layer 2)
+
+- **Layer 1 (one row per segment)**: `/start` answers `synced: { turns, chars }` ⇒ the panel shows `Inherited N main-session turns · ~X chars`. If a branch preamble really was prepended on that turn, the response also carries `notice` (**the preamble text as injected into the model**, shown verbatim; only the first turn of a segment has it). That is the **only** text this plugin injects; the system prompt and the tool declarations are assembled by DSH and are **deliberately not shown**.
+- **Layer 2 (expand on demand)**: `GET /side-branch/inherited?conversationId=&locale=` returns the turns before **this segment's cut point** (`conv.parentCut`) — **the last turn in full, one line per earlier turn**, all **truncated server-side with no model call** (so a "summary" is not "summarise it again"). The response carries `truncated` (whether anything was cut) and `parentHasNewer` (the main session has grown since ⇒ the next follow-up will include it).
+- ⛔ **Layer 2's content never enters persisted panel state** (`rounds` / `normalizeRound` / `sessionStorage`): a main-session prefix can be hundreds of kilobytes, and panel state has a 5–10 MB `sessionStorage` quota ⇒ putting it in blows the quota instantly and breaks "survives a refresh". It lives only in component memory and is fetched once, on demand.
+
+### The context limit: an estimate
+
+After a re-fork the **new session has no usage yet** (the old `lastContextTokens` criterion is necessarily `undefined`), so the limit is now estimated:
+
+```text
+used ≈ the parent's last assistant/message input + cacheRead + cacheWrite (measured)
+     + (branch-history characters + this turn's question characters) × safety factor
+```
+
+Above `contextWindow × 0.8` the turn is **refused** with `contextFull: { used, limit, window }`; when the window cannot be read a fallback limit is used. ⚠️ **`used` is an estimate** (the parent-prefix half is measured, the other half is estimated from character counts), so it is normal for the number in the panel to disagree with the real usage once that turn settles. The history is **never truncated**.
+
+### The startup orphan sweep and the instance lease
+
+Every re-fork **adds one session record**, and the platform's session-persistence layer **has no API to delete a session** ⇒ records would pile up forever. So the plugin sweeps once in `apply()`: a `sessions/<project>/side-<uuid>/` directory on disk that is **not in this process's ledger** is an orphan left by an earlier instance.
+
+That criterion is only safe together with the **instance lease**: the ledger **is necessarily empty at startup**, so if a **second DSH instance sharing the same `DSH_HOME`** is running at the same time, it would delete the first instance's **live** side-session directories as orphans (the first instance still has them in memory while their on-disk log is gone ⇒ that branch is simply broken). The mechanism: on startup each instance posts a lease in `<DSH_HOME>/side-branch-instances/` (`<pid>-<uuid>.json`) and refreshes its heartbeat, deleting it on unload; before sweeping, the plugin skips **the entire sweep** if it finds **any other live lease** (stale ones — expired heartbeat or dead process — are cleaned up in passing).
+
+Three safety checks: ① the directory name must be **exactly** `side-<uuid>` (right prefix but wrong shape ⇒ **untouched**, only logged); ② it must not be in this process's ledger; ③ it must be strictly under the `sessions` root, with no path escape. Everything deleted is **logged item by item** (the platform cannot delete sessions, so the log is the only trace); a single failure is only logged and never affects startup. ⛔ The main sessions' (`session-*`) files are **never touched**.
 
 ## 🛡️ How read-only is guaranteed
 
@@ -199,14 +293,15 @@ Measured: in a PTC parent session the PTC preamble applied from the first round,
 
 ## ⚠️ Known limitations
 
-- **A branch inherits a snapshot from the moment it is opened.** Turns the main session completes afterwards do not enter that branch. To include newer content, use "Clear" and start a new branch.
+- **A turn the main session has not *settled* yet is invisible.** Every rebuild cuts at the main session's **last `turn/end`**, so a turn that is still generating (or was just sent and has not finished) is in neither the seed nor the replay. Turns the main session **has** finished do follow along automatically — that is what the re-fork does. To cite something not yet settled, use **manual selection quoting**: what is limited is "seeing it automatically", not "being able to quote it".
 - **At most two side branches at once.** This comes from DSH's sidebar pane limit (one instance per tab type per pane, at most two panes), not from this plugin — but you will run into it.
 - **The six allowed tools' own behaviour is not constrained by read-only.** The guard blocks *tools outside the list*; it does not restrict these six tools' network access, process spawning or file reading. See "Read-only is not harmless" above.
-- **"Clear" is irreversible for the panel history.** After clearing, that branch is no longer visible in the panel and cannot be brought back. The archived side-session record is still on disk, but the official API cannot delete it and it never appears in any session list.
+- **"Clear" is irreversible for the panel history.** After clearing, that branch is no longer visible in the panel and cannot be brought back. The archived side-session record is still on disk, but the official API cannot delete it and it never appears in any session list. Note also that a re-fork **adds one session record per rebuild**, and the platform **has no API to delete a session** ⇒ those records are reclaimed by the plugin's **startup orphan sweep** (see above); while **two instances share one `DSH_HOME`** and run at the same time, that sweep **skips entirely**.
 - Settings live in browser `localStorage`: switching browsers or clearing site data resets them. Currently there is only one setting (the main-session quick-entry toggle).
 - The tool allow-list is not configurable. Narrowing it means editing code; there is no per-tool switch.
 - After a plugin reload, the table of "sleeping" sessions is gone with memory, and old session ids report that a new branch was started (the client creates one automatically, so nothing hangs). **Note the two paths**: going idle past the threshold only puts the side session to *sleep* — the record stays and the next question **wakes it silently**, without even a divider; only a **plugin reload** loses the record and starts a new branch. Your question is still answered normally and you do not have to retype it — that branch's history just no longer connects.
-- Each branch has a context ceiling. On reaching it, the plugin refuses to send and shows the actual usage instead of silently dropping the oldest turns.
+- Each branch has a context ceiling. On reaching it the plugin **refuses to send** and returns `contextFull: { used, limit, window }`, instead of silently dropping the oldest turns. ⚠️ That `used` is an **estimate** (after a re-fork the new session has no usage yet), not a measured usage.
+- **The cache hit rate is measured, not guaranteed.** The platform may **replace the system node in place** on the side session's first step (node 0) — the official wording is *"A prompt change that replaces a system node in place makes the request differ from that node's first token — in full when the node is node 0"* ⇒ if that happens, **everything from token 0 on is billed at full price**. A mismatched tool set also forces a new sequence. So there is no "always hits": 97%–98% is a measurement, not a promise. And **hitting the cache does not mean the tokens stop occupying the context window**: the `inputTokens + cacheRead + cacheWrite` total counts the cached tokens just the same.
 - With a `ptc` main session the branch **cannot use a single tool** (the only visible entry, `run_code`, is always denied). A custom preset saved from the PTC template also defeats the opening-time detection, wasting the first round.
 - After being denied by the guard, the model often **retries the same tool**, wasting a round. This is independent of PTC mode and was observed in both.
 - Verified on DSH `0.1.5-rc.2` (before the archive gate) and `0.1.7-rc.2` (with it). `0.1.6-alpha.2` was checked by reading its published packages only — it already has `unarchiveSession` and does **not** yet have `ArchivedSessionGate`, so the feature-detected path keeps it working — but no end-to-end run was done there.

@@ -1,7 +1,7 @@
 {
   "name": "dsh-side-branch",
-  "version": "0.1.1",
-  "description": "DSH 侧枝会话：从主会话派生一条只读分支，继承已有上下文与预设以继续命中前缀缓存，答案不进入主会话的模型上下文。",
+  "version": "0.2.0",
+  "description": "DSH 侧枝会话：从主会话派生一条只读分支，每轮追问都用主会话最新的已结算内容重建上下文以继续命中前缀缓存，答案不进入主会话的模型上下文。",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -40,7 +40,9 @@
   ],
   "scripts": {
     "smoke": "node scripts/smoke.mjs",
-    "prepublishOnly": "node scripts/smoke.mjs"
+    "client-check": "node scripts/client-check.mjs",
+    "check": "node scripts/smoke.mjs && node scripts/client-check.mjs",
+    "prepublishOnly": "node scripts/smoke.mjs && node scripts/client-check.mjs"
   },
   "dsh": {
     "bundle": {
