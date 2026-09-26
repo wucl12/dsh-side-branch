@@ -217,7 +217,276 @@ for (const field of ['handoff', 'conversationGone', 'contextFull']) {
 	check(hostSource.includes(field), `宿主 /start 契约里有 ${field}`)
 }
 
-// ─────────────────────────────────────────── 客户端 bundle
+// ─────────────────────────────────────────── 0.2.0 · Re-Fork 架构
+//
+// 一句话规则：**每一轮追问都用主会话最新的已结算前缀当种子，再把侧枝自己的对话重放进去**。
+// 这一节守的是这套架构最容易被"优化"坏的三处：判据、重放白名单、交接顺序。
+const reforkBody = /async function reForkConversation\(ctx, parent, oldConv, effective, locale\) \{[\s\S]*?\n\}/.exec(hostSource)?.[0]
+const shouldBody = /function shouldReFork\(conv, parent, effective\) \{[\s\S]*?\n\}/.exec(hostSource)?.[0]
+const replayBody = /function replaySideHistory\(conv, events\) \{[\s\S]*?\n\}/.exec(hostSource)?.[0]
+
+check(shouldBody !== undefined, 'shouldReFork 存在')
+check(reforkBody !== undefined, 'reForkConversation 存在')
+check(replayBody !== undefined, 'replaySideHistory 存在')
+
+// 判据必须**同时**含"主会话多了已结算回合"与"模型变了"两条：
+// 少了后者 ⇒ 用户换完模型那一轮会继续用旧模型（静默忽略用户的选择）。
+check(
+	shouldBody !== undefined && /sameAgentOptions\(conv\.model, effective\)/.test(shouldBody),
+	'shouldReFork 把"换模型"也算作要 re-fork（缺了它 = 用户选的模型被静默忽略）',
+)
+check(
+	shouldBody !== undefined && /completedTurnPrefixLength\(/.test(shouldBody) && /conv\.parentCut/.test(shouldBody),
+	'shouldReFork 比对主会话"已结算前缀"与建段时记下的 parentCut',
+)
+
+// `parentCut` 必须在**建段时**就写好：只在 re-fork 里赋值的话，新开的那一段第一轮追问
+// `completedTurnPrefixLength(...) > undefined` 恒为真 ⇒ 每轮都白 re-fork 一次。
+check(
+	/conversation = \{[^]*?parentCut,/.test(hostSource),
+	'createConversation 建段时就记下 parentCut（否则每轮都会白 re-fork）',
+)
+check(/parentCut: conv\.parentCut/.test(hostSource) && /parentCut: record\.parentCut/.test(hostSource), '睡觉/唤醒都带着 parentCut')
+
+// 重放白名单：只能是那 5 种 surface 事件（`turn/start`、`step/start`、`tool/call` 之类是纯日志事件，
+// `append` 它们会抛）。
+check(
+	replayBody !== undefined && /REPLAYABLE = new Set\(\[[^\]]*'system\/message'[^\]]*'developer\/message'[^\]]*'user\/message'[^\]]*'assistant\/message'[^\]]*'tool\/result'[^\]]*\]\)/.test(replayBody),
+	'replaySideHistory 有 surface 事件白名单（且正好是那五种）',
+)
+check(
+	replayBody !== undefined && !/turn\/start|step\/start|tool\/call|request\/header/.test(replayBody),
+	'replaySideHistory 不重放纯日志事件（append 它们会抛）',
+)
+// 数据必须传 `event.data` 原样（`assistant/message` 内嵌真实 provider 流，手搓必被拒）。
+check(
+	replayBody !== undefined && /append\(event\.type, event\.data, \{ surfaceOp: 'append' \}\)/.test(replayBody),
+	'replaySideHistory 传 event.data 原样（不手搓消息）',
+)
+// ⛔ 绝不能"顺手补全" `sourceEventSeqs`：那是**旧会话**的 callSeq，抄过来会抛
+// "sourceEventSeqs must reference earlier events"。这一条是 0.2.0 实现时踩过的坑。
+check(
+	replayBody !== undefined && !/sourceEventSeqs/.test(replayBody.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '')),
+	'replaySideHistory 不复制 sourceEventSeqs（外来的 callSeq 会让 append 抛错）',
+)
+// 不做截断：到上限就拒绝（"拒绝是显式失败，截断是隐式失真"）。
+check(
+	replayBody !== undefined && !/\.slice\(0,|MAX_|limit/i.test(replayBody.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '')),
+	'replaySideHistory 不截断侧枝历史（到上限由 /start 的估算闸拒绝，不静默丢）',
+)
+
+// ★ 顺序纪律：**先重放成功，再释放老会话**。反了就没有退路（老会话没了、新的没历史）。
+const replayAt = hostSource.indexOf('const replayed = replaySideHistory(next, sideOwn)')
+const closeOldAt = hostSource.indexOf("closeConversation(oldConv,")
+check(
+	replayAt > 0 && closeOldAt > 0 && replayAt < closeOldAt,
+	'先重放成功、再释放老会话（顺序反了就没有退路）',
+)
+check(
+	reforkBody !== undefined && /void closeConversation\(next,/.test(reforkBody),
+	'重放失败时丢弃**刚建的新会话**（老会话原样保留、本轮拒绝）',
+)
+// 老那套"换模型 ⇒ 带历史换段"必须彻底消失（re-fork 是唯一的换段路径）。
+check(
+	!/createConversation\(ctx, parent, effective, conv\.child\.session/.test(hostSource) && !/seedSource \?\?/.test(hostSource),
+	'旧的"换模型带历史换段"（seedSource）已删除',
+)
+// re-fork 每轮都换 id ⇒ 必须每轮回 `handoff: true`，否则客户端每轮都会画一条分隔线。
+check(
+	/handedOff = true/.test(hostSource) && /handedOff \? \{ handoff: true \}/.test(hostSource),
+	'每轮 re-fork 都回 handoff: true（客户端因此不画"新的一段"分隔线）',
+)
+
+// 上限改成**估算**：re-fork 之后新会话还没有 usage，老那套 `conv.lastContextTokens` 不存在。
+check(/function estimateRequestTokens\(/.test(hostSource), 'estimateRequestTokens 存在（re-fork 后没有 usage 可读）')
+check(
+	/function lastPromptTokensOf\(/.test(hostSource) && /inputTokens/.test(hostSource),
+	'上限估算的"父前缀"那一半取父会话日志里最后一条 assistant/message 的 usage（父 Agent 上没有 lastContextTokens）',
+)
+check(
+	!/typeof conv\.lastContextTokens === 'number' && conv\.lastContextTokens >= limit/.test(hostSource),
+	'不再用 re-fork 后必然为 undefined 的旧判据（conv.lastContextTokens）',
+)
+
+// ─────────────────────────────────────────── 0.2.0 · 多段回答（修"只剩最后一段"）
+const jobBody = /function createJob\(fields\) \{[\s\S]*?\n\}/.exec(hostSource)?.[0]
+check(jobBody !== undefined && /segments: \[\]/.test(jobBody), 'job 有有序段落 segments（不再只有 text/reasoning 两个字符串槽位）')
+check(
+	/const isRetry = sameStep && job\.lastAttemptId !== undefined && frame\.attemptId !== job\.lastAttemptId/.test(hostSource),
+	"'start' 帧按 turn/step 分流：同 step 不同 attemptId 才算重试",
+)
+check(
+	/else if \(!sameStep\) \{/.test(hostSource) && /emitJob\(job, 'segment'/.test(hostSource),
+	'step 变了 ⇒ 开新段（emit segment），绝不删旧的',
+)
+check(
+	!/job\.attempts/.test(hostSource),
+	"'attempts'（把新 step 也当成重试）已拆成 steps/retries，语义不再错",
+)
+check(
+	!/job\.text = final/.test(hostSource) && /replaceCurrentSegment\(job, 'text', final\)/.test(hostSource),
+	'终局文本只替换**当前段**（老代码整段替换会把前面几段一起覆盖）',
+)
+check(
+	/segments: segmentsOf\(job\)/.test(hostSource) && /function segmentsOf\(job\) \{/.test(hostSource),
+	'snapshot / 终态载荷都带 segments（否则刷新后多段又没了）',
+)
+check(/function syncSegmentShortcuts\(job\) \{/.test(hostSource), 'text/reasoning 是段落数组的**纯函数**（不可能与 segments 漂移）')
+check(
+	/const REPLAYABLE = new Set/.test(hostSource) && /const SEGMENT_KINDS = new Set\(\['reasoning', 'text', 'tool'\]\)/.test(clientSource),
+	'客户端也认识三种段落 kind（与宿主同源）',
+)
+check(
+	/normalizeSegments\(round\.segments, answer, reasoning\)/.test(clientSource),
+	'客户端 normalizeRound 由老数据的 answer/reasoning 合成段落（刷新后老面板不变空）',
+)
+check(
+	/Array\.isArray\(round\.segments\) \? round\.segments : \[\]/.test(clientSource) && /segments\.forEach\(/.test(clientSource),
+	'客户端按段落数组顺序渲染（思考 → 正文 → 工具 → 思考 → 正文）',
+)
+check(
+	!/'panel\.toolPrefix' \+ round\.tool/.test(clientSource),
+	'客户端不再用单槽位 round.tool 渲染（工具已是段落序列的一员）',
+)
+
+// ─────────────────────────────────────────── 引用随轮入档
+// ★ 引用原文以前**只进 prompt 信封**：面板上只显示问题原文，所以"这一轮引用了什么"
+//   在记录里查不到；而且引用槽会一直挂着（下一轮还在，得手动点 × 或「清空」）。
+//   现在：发送时把引用**随这一轮入档**（渲染成可折叠引用块）后**自动清空引用槽**。
+check(
+	/const reference = quoted === '' \? '' : clipReference\(quoted\)\.text/.test(clientSource),
+	'引用原文只收窄一次：同一份既进 prompt 信封、又进这一轮记录（两者逐字一致）',
+)
+check(
+	/question: text,[\s\S]{0,500}?\n\t{5}reference,/.test(clientSource),
+	'新的一轮把引用原文记进 rounds[]（reference 字段）',
+)
+check(
+	/rounds: \[\.\.\.rounds, round\], jobId: null \}\)[\s\S]{0,500}?quoteBus\.clear\(sessionId, paneId\)[\s\S]{0,80}?setQuote\(''\)/.test(clientSource),
+	'点发送后引用槽自动清空（且连 quoteBus 一起清，重挂载不会把同一份引用捞回来）',
+)
+check(
+	/reference: clampString\(round\.reference, MAX_REFERENCE_LENGTH \+ 64\)/.test(clientSource),
+	'normalizeRound 保留 reference（刷新后引用块还在）',
+)
+check(
+	/round\.reference !== ''[\s\S]{0,400}?dsh-side-branch-refblock[\s\S]{0,400}?dsh-side-branch-refbody/.test(clientSource),
+	'轮次里渲染可折叠引用块（refblock 折叠 + refbody 正文）',
+)
+check(
+	/'panel\.referenceChip': '引用原文/.test(clientSource) && /'panel\.referenceChip': 'Quoted text/.test(clientSource),
+	'引用块文案在 zh / en 两张表里各有一份（都是真文案，不是占位）',
+)
+
+// ─────────────────────────────────────────── 0.2.0 · 层 1 / 层 2（继承与注入可见）
+check(
+	new RegExp(`\\[ROUTE_PREFIX \\+ '/inherited'\\]: 'GET'`).test(hostSource),
+	'ROUTE_METHODS 里有 /inherited（GET）—— 不登记的话错方法会掉进 404，破坏 405 + Allow 契约',
+)
+check(/function handleInherited\(ctx, url, res\) \{/.test(hostSource), 'handleInherited 存在（只读路由的实现）')
+check(
+	/const INHERITED_LAST_TURN_CHARS/.test(hostSource) && /const INHERITED_EARLIER_TURN_CHARS/.test(hostSource),
+	'继承内容：最后一轮全文 + 更早每轮一行摘要（服务端截断，不调模型）',
+)
+// ⛔ 继承历史**绝不能进面板持久化状态**：一份主会话前缀可能几十万字符，
+//    而面板状态走 sessionStorage（5–10 MB 配额），塞进去会立刻爆配额、坏掉"刷新不丢"。
+check(
+	/normalizeRound = \(raw\) => \{[\s\S]*?\n\t{3}\}/.test(clientSource) && !/inherited/i.test(/const normalizeRound = \(raw\) => \{[\s\S]*?\n\t{3}\}/.exec(clientSource)?.[0] ?? ''),
+	'继承内容不进 normalizeRound（只放内存，否则会爆 sessionStorage 配额）',
+)
+check(
+	/react\.useState\(null\)[\s\S]{0,200}inherited/.test(clientSource),
+	'继承内容只放在组件内存态（useState），按需拉取',
+)
+check(
+	/panel\.inheritedLine/.test(clientSource) && /panel\.noticeLine/.test(clientSource),
+	'面板有「已继承 N 轮」那一行与「注入的分支引导词」折叠区',
+)
+check(
+	/synced: started\.synced|started\?\.synced/.test(clientSource) && /notice: started\.notice|started\?\.notice/.test(clientSource),
+	'客户端接收并保存 synced / notice',
+)
+// ★ 「问」只能取这一轮的**第一条** `user/message`：DSH 自己会在用户那条之后追加一条上千字的
+//   运行期快照（`Current runtime context…`），逐条拼起来会把平台样板文字当成"用户问的话"显示，
+//   字数也被撑大好几倍（实测把一句 8 字的问题显示成 1888 字）。
+const turnsBody = /function inheritedTurnsOf\(events, cut\) \{[\s\S]*?\n\}/.exec(hostSource)?.[0]
+check(turnsBody !== undefined && /current\.question === ''/.test(turnsBody), '继承摘要的「问」只取该轮第一条 user/message')
+check(turnsBody !== undefined && !/current\.question \+=/.test(turnsBody), '继承摘要不把该轮后续的 user/message 拼进「问」（运行期快照会被当成用户提问）')
+const summaryBody = /function synchronizedSummary\(events, cut\) \{[\s\S]*?\n\}/.exec(hostSource)?.[0]
+check(
+	summaryBody !== undefined && /inheritedTurnsOf\(events, cut\)/.test(summaryBody),
+	'「已继承 N 轮 / 约 X 字」与展开出来的内容同源（两处各算一遍必然对不上）',
+)
+// ★ 划选入口必须排除**本插件自己的面板**：否则在侧枝里划字也会弹「引用并提问」，
+//   而那个按钮的语义是"把主会话的原文引用进来" ⇒ 会把这一段自己的内容引用回同一段（自指循环）。
+check(
+	/const refused = '[^']*\.dsh-side-branch-panel/.test(clientSource),
+	'划选入口排除本插件面板（侧枝里划字不再弹「引用并提问」）',
+)
+check(/const refused = '[^']*\[data-side-branch-menu\]/.test(clientSource), '划选入口排除模型选择悬浮窗')
+// ★ 自动滚底必须挂在**可滚动的那一层**（`.dsh-side-branch-scroll`）。
+//   挂在轮次列表 `.dsh-side-branch-rounds`（`display:flex`、不滚动）上时 `scrollTop = scrollHeight`
+//   是**空操作** —— 现象是"问了之后回答不出现"（其实已在 DOM 里，只是落在可视区外）。
+check(
+	/const scrollRef = react\.useRef\(null\)/.test(clientSource) && /dsh-side-branch-scroll', ref: scrollRef/.test(clientSource),
+	'自动滚底挂在可滚动的那一层（挂在轮次列表上是空操作，答案会落在可视区外）',
+)
+check(!/answerRef/.test(clientSource), '旧的 answerRef（挂错元素）已删除，别改回去')
+check(
+	/inheritedOpen,/.test(clientSource),
+	'继承区展开/收起也触发重新滚底（它也在滚动容器里，会把下方内容顶出去）',
+)
+// ★ 主会话的**思考**在种子里，而且 `dsh-llm-deepseek` 会把 assistant 历史的 reasoning 序列化成
+//   `{ type: 'thinking' }` 发出去（只有 user / tool-result 内容才丢掉它）⇒ 继承摘要必须算它、
+//   面板必须能看见它，否则"约 X 字"是**低报**、用户会以为思考没被继承。
+check(/function reasoningOf\(blocks\)/.test(hostSource), 'reasoningOf 存在（主会话的思考也要算进继承）')
+check(turnsBody !== undefined && /current\.reasoning \+= reasoningOf\(/.test(turnsBody), '继承摘要收集 reasoning')
+check(
+	summaryBody !== undefined && /entry\.question\.length \+ entry\.reasoning\.length \+ entry\.answer\.length/.test(summaryBody),
+	'「已继承 N 轮 / 约 X 字」把思考算进去（不算就是低报，对不上观感）',
+)
+check(/reasoningChars: entry\.reasoning\.length/.test(hostSource), '/inherited 每轮带 reasoningChars（面板要显示「思考 N 字」）')
+check(/'panel\.inheritedThink'/.test(clientSource), '面板有「思考」那一层折叠（否则看起来像没继承）')
+
+// ─────────────────────────────────────────── 0.2.0 · 启动清理孤儿（§11）
+check(/function cleanupOrphanSessions\(/.test(hostSource), 'cleanupOrphanSessions 存在')
+check(
+	/const SIDE_SESSION_DIR_PATTERN = \/\^side-/.test(hostSource) && /SIDE_SESSION_DIR_PATTERN\.test\(entry\.name\)/.test(hostSource),
+	'孤儿判据要求目录名正好是 side-<uuid>（前缀对但形状不对的一律不动、只留痕）',
+)
+// ★ 实例租约：两个共用同一个 DSH_HOME 的实例同时跑时，B 启动时账本也是空的
+//   ⇒ 没有租约就会把 A **正在用的**侧枝目录当孤儿删掉。发现有活着的外来租约必须**整个跳过**。
+check(/INSTANCE_DIR_NAME/.test(hostSource) && /instanceLeasePath/.test(hostSource), '有实例租约（side-branch-instances/*.json）')
+check(
+	/const foreign = live\.filter/.test(hostSource) && /foreign\.length > 0[\s\S]{0,200}return/.test(hostSource),
+	'发现别的活着的实例 ⇒ 整个跳过清理（绝不删别的实例正在用的侧枝）',
+)
+check(
+	/function pidAlive\(pid\)/.test(hostSource) && /heartbeatAt/.test(hostSource),
+	'租约靠"心跳新鲜 + PID 还活着"判活，过期/进程已死的租约顺手清掉',
+)
+check(
+	/conversations\.size > 0 \|\| sleeping\.size > 0/.test(hostSource) && /本进程已有侧枝记录/.test(hostSource),
+	'清理前还有一道保险：本进程已有侧枝记录就跳过（effect 重跑也不会误删）',
+)
+check(
+	/已删除', removed\.length/.test(hostSource) && /for \(const id of removed\) log/.test(hostSource),
+	'删除留有清单日志（平台没有会话删除 API，删了什么必须可追溯）',
+)
+check(
+	/await rm\(dir, \{ recursive: true, force: true \}\)/.test(hostSource) && /catch \(error\) \{\s*\n\s*failed\.push/.test(hostSource),
+	'单条删除失败只记日志、不影响启动',
+)
+check(
+	/const sessionsRoot = join\(home, 'sessions'\)/.test(hostSource) && /resolve\(dir\)\.startsWith\(rootResolved \+ sep\)/.test(hostSource),
+	'清理严格限定在 sessions 根目录下（不许路径逃逸）',
+)
+check(
+	/entry\.name\.startsWith\(SIDE_SESSION_PREFIX\)/.test(hostSource) && !/startsWith\('session-'\)/.test(hostSource),
+	'清理只认 side- 前缀，不碰主会话（session-*）',
+)
+
+// 客户端 bundle
 const clientPath = join(root, 'lib/client.js')
 check(existsSync(clientPath), 'lib/client.js 存在（DSH 直接取这个文件，不构建）')
 const clientInject = /const inject = \[([^\]]*)\]/.exec(clientSource)?.[1]
