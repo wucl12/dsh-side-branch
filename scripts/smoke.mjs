@@ -10,7 +10,10 @@
  *   ⑤ `package.json` 与 `cordis.patch.yml` 的包名一致，且 `dsh.client.inject` 里
  *      每个包名在本机 DSH 安装目录里真实存在（用 `DSH_INSTALL_DIR` 指定路径，找不到就跳过）；
  *   ⑥ **归档闸对策**的形状没被改坏（DSH ≥ 0.1.7-rc.1 会拒掉已归档会话的模型步，
- *      本插件靠归档来隐藏侧会话 ⇒ 必须"跑前解锁、跑完回藏"，且解锁必须**特性探测**）。
+ *      本插件靠归档来隐藏侧会话 ⇒ 必须"跑前解锁、跑完回藏"，且解锁必须**特性探测**）；
+ *   …
+ *   ⑩ **与主会话对齐（0.2.2）**：一轮**没有总时长上限**（只有停滞看门狗），
+ *      划选入口只认主会话正文区（作用域判据的形状；真实行为由 client-check 的假 DOM 驱动）。
  *
  * ⚠️ 它**不验证**回答质量、真实 guard 拦截、SSE 逐词流式与界面 —— 那些必须在真宿主里跑。
  *
@@ -511,6 +514,43 @@ check(
 	!/': '[^']*侧枝/.test(clientSource),
 	'UI 词典的取值里不含「侧枝」（内部描述性措辞不算）',
 )
+
+// ─────────────────────────────────────────── 0.2.2 · 与主会话对齐（无总时长超时 / 划选入口只认主会话）
+//
+// 两个 BUG 的回归判据：
+//   ① 侧枝一轮曾经有 **90 秒总时长硬超时** ⇒ 长思考/长工具的一轮被无条件掐断，
+//      而主会话只是继续等。现在只保留"**完全没有事件**才中止"的停滞看门狗。
+//   ② 划选入口曾经是**文档级**的（只靠输入框黑名单）⇒ 在右栏文件预览、设置弹层、
+//      其它插件面板里划字也会弹出「引用并提问」，引用来源不属于主会话。
+//      现在判"选区是否在**主会话正文区**里"。
+//
+// ⚠️ 这里守的是**源码形状**；② 的真实行为由 `scripts/client-check.mjs` 的假 DOM 用例驱动。
+// 源码在第 76 行已经读进来了（`hostSource` / `clientSource`），这里直接用。
+check(/ANSWER_TIMEOUT_MS/.test(hostSource) === false, '宿主里已经没有 ANSWER_TIMEOUT_MS（总时长硬超时已删除）')
+check(/timeout: '请求超时/.test(hostSource) === false, '「请求超时（N 秒）」文案已删除（不再是总时长语义）')
+const stallMatch = /const STALL_TIMEOUT_MS = (\d+) \* 60 \* 1000/.exec(hostSource)
+check(stallMatch !== null, 'STALL_TIMEOUT_MS 以"分钟"定义（停滞看门狗）')
+check(stallMatch !== null && Number(stallMatch[1]) >= 10, `停滞看门狗 ≥ 10 分钟（实际 ${stallMatch?.[1] ?? '?'} 分钟；越长越接近"不超时"）`)
+check(/function stallArm\(job\)/.test(hostSource), '存在 stallArm(job)：重挂停滞看门狗的唯一入口')
+const stallCalls = hostSource.split('stallArm(job)').length - 1
+check(stallCalls >= 3, `stallArm(job) 在"建 job + 流式帧"两处都被调用（出现 ${stallCalls} 次，含定义；< 3 就是退回成一次性定时器）`)
+check(/stallArm\(conv\.job\)/.test(hostSource), '会话事件（工具/用量/消息…）也会重挂看门狗（长工具不会被误杀）')
+check(/stalled: '/.test(hostSource) && (hostSource.split("stalled: '").length - 1) === 2, '停滞文案在 zh / en 两张表里各一份')
+check(/T\.stalled|hostTexts\(job\.locale\)\.stalled/.test(hostSource), '看门狗用的是 stalled 文案（不是旧 timeout）')
+check(/timer\.unref/.test(hostSource), '看门狗计时器仍然 unref（不拖住进程退出）')
+// turn/end 的错误原因要带给用户（原来只显示「意外终止：error」）
+check(/reasonObject\?\.error\?\.message/.test(hostSource), 'turn/end 的 error 原因取具体 message')
+check(/T\.turnFailed/.test(hostSource), '有 turnFailed 文案（把供应商/平台的真实错误显示出来）')
+check((hostSource.split("turnFailed: '").length - 1) === 2, 'turnFailed 文案在 zh / en 两张表里各一份')
+
+// 客户端：划选入口的作用域
+check(/function insideMainConversation\(element\)/.test(clientSource), '客户端有 insideMainConversation()（选区归属判据）')
+check(/data-conversation-content/.test(clientSource), '判据用主会话正文标记 [data-conversation-content]')
+check(/data-sidebar-right-panel/.test(clientSource), '判据排除右栏 [data-sidebar-right-panel]（文件预览/设置/本插件面板）')
+check(/data-sidebar-chat/.test(clientSource), '判据排除右栏的嵌入会话 [data-sidebar-chat]（子代理会话也带正文标记）')
+check(/data-conversation-region="composer"/.test(clientSource), '判据排除 composer 座位')
+check(/if \(insideMainConversation\(startElement\) === false\) return ''/.test(clientSource), 'selectionText 真的走了这个判据（不是定义了没用）')
+check(/\.dsh-side-branch-panel/.test(clientSource), '本插件面板仍在黑名单里（作用域判据之外的第二道）')
 
 // ─────────────────────────────────────────── package.json 与依赖核验
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))

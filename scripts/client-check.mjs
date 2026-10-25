@@ -265,24 +265,116 @@ const treeText = () => {
 }
 
 // ══════════════════════════════════════════════ 极简 DOM / 平台
+//
+// ★ 这套 DOM 必须能表达**父子关系与选择器**，原因见下面「划选入口的作用域」那一段：
+//   那个 BUG（在右栏文件预览里划字也弹「引用并提问」）只有"祖先链 + 选择器"这一层能抓到，
+//   纯 stub（closest 恒 null）会把缺陷和修复**都**判成"不弹"，等于没有测试。
+//
+// 支持的 selector 子集（本插件真正用到的那些）：
+//   tag / .class / [attr] / [attr="value"] / [attr]:not([attr="value"]) / 逗号并列。
+const attrOf = (element, name) => {
+	const key = String(name)
+		.replace(/^data-/, '')
+		.replace(/-([a-z])/g, (_whole, letter) => letter.toUpperCase())
+	if (element.dataset !== undefined && element.dataset[key] !== undefined) return String(element.dataset[key])
+	if (element.attributes !== undefined && element.attributes[name] !== undefined) return String(element.attributes[name])
+	return undefined
+}
+
+const matchesSimple = (element, part) => {
+	let rest = part.trim()
+	if (rest === '') return false
+	const tag = /^[a-z][a-z0-9-]*/i.exec(rest)
+	if (tag !== null) {
+		if (String(element.tagName).toLowerCase() !== tag[0].toLowerCase()) return false
+		rest = rest.slice(tag[0].length)
+	}
+	while (rest.length > 0) {
+		let match
+		if ((match = /^\.([\w-]+)/.exec(rest)) !== null) {
+			const classes = String(element.className ?? '').split(/\s+/)
+			if (classes.includes(match[1]) === false) return false
+		} else if ((match = /^\[([\w-]+)(?:="([^"]*)")?\]/.exec(rest)) !== null) {
+			const value = attrOf(element, match[1])
+			if (value === undefined) return false
+			if (match[2] !== undefined && value !== match[2]) return false
+		} else if ((match = /^:not\(\[([\w-]+)(?:="([^"]*)")?\]\)/.exec(rest)) !== null) {
+			const value = attrOf(element, match[1])
+			const hit = match[2] === undefined ? value !== undefined : value === match[2]
+			if (hit) return false
+		} else {
+			return false
+		}
+		rest = rest.slice(match[0].length)
+	}
+	return true
+}
+
+/** 逗号并列 = 任一命中（与浏览器一致）。 */
+const matchesSelector = (element, selector) => String(selector).split(',').some((part) => matchesSimple(element, part))
+
+const collectDescendants = (node, out) => {
+	for (const child of node.children ?? []) {
+		out.push(child)
+		collectDescendants(child, out)
+	}
+	return out
+}
+
 const makeElement = (tag) => ({
 	tagName: String(tag).toUpperCase(),
 	className: '',
 	textContent: '',
 	style: {},
 	dataset: {},
+	attributes: {},
 	children: [],
-	appendChild() {},
-	removeChild() {},
-	setAttribute() {},
-	getAttribute: () => null,
+	parentNode: null,
+	appendChild(child) {
+		child.parentNode = this
+		this.children.push(child)
+		return child
+	},
+	removeChild(child) {
+		const at = this.children.indexOf(child)
+		if (at > -1) this.children.splice(at, 1)
+		child.parentNode = null
+		return child
+	},
+	remove() {
+		if (this.parentNode !== null) this.parentNode.removeChild(this)
+	},
+	setAttribute(name, value) {
+		this.attributes[name] = String(value)
+	},
+	getAttribute(name) {
+		const value = attrOf(this, name)
+		return value === undefined ? null : value
+	},
+	hasAttribute(name) {
+		return attrOf(this, name) !== undefined
+	},
 	addEventListener() {},
 	removeEventListener() {},
-	closest: () => null,
-	querySelector: () => null,
-	querySelectorAll: () => [],
+	closest(selector) {
+		let node = this
+		while (node !== null && node !== undefined) {
+			if (matchesSelector(node, selector)) return node
+			node = node.parentNode
+		}
+		return null
+	},
+	querySelector(selector) {
+		return collectDescendants(this, []).find((node) => matchesSelector(node, selector)) ?? null
+	},
+	querySelectorAll(selector) {
+		return collectDescendants(this, []).filter((node) => matchesSelector(node, selector))
+	},
 	getBoundingClientRect: () => ({ top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }),
 })
+
+/** document 级监听要能**真的被触发**（划选入口的作用域测试靠它）。 */
+const documentListeners = new Map()
 
 const documentStub = {
 	head: makeElement('head'),
@@ -290,10 +382,23 @@ const documentStub = {
 	documentElement: makeElement('html'),
 	createElement: makeElement,
 	getElementById: () => null,
-	addEventListener() {},
-	removeEventListener() {},
-	querySelector: () => null,
-	querySelectorAll: () => [],
+	addEventListener(name, handler) {
+		if (documentListeners.has(name) === false) documentListeners.set(name, new Set())
+		documentListeners.get(name).add(handler)
+	},
+	removeEventListener(name, handler) {
+		documentListeners.get(name)?.delete(handler)
+	},
+	/** 手动派发（只给测试用；生产代码里是浏览器派发）。 */
+	dispatch(name, event) {
+		for (const handler of documentListeners.get(name) ?? []) handler(event ?? {})
+	},
+	querySelector(selector) {
+		return collectDescendants(this.documentElement, []).concat(collectDescendants(this.body, [])).find((node) => matchesSelector(node, selector)) ?? null
+	},
+	querySelectorAll(selector) {
+		return collectDescendants(this.documentElement, []).concat(collectDescendants(this.body, [])).filter((node) => matchesSelector(node, selector))
+	},
 }
 
 const storageStub = () => {
@@ -620,7 +725,79 @@ async function run() {
 	check(refBlocks.length === 1, '引用块是折叠形态（.dsh-side-branch-refblock）')
 	const refBodies = findAll((node) => String(node.props?.className ?? '').includes('dsh-side-branch-refbody'))
 	check(refBodies.length === 1 && refBodies[0].type === 'blockquote', '引用正文在 <blockquote> 里（.dsh-side-branch-refbody）')
+
+	// ⑩ 划选入口的**作用域**（0.2.2 修的 BUG：右栏文件预览 / 设置 / 其它插件面板里划字也弹「引用并提问」）
+	//
+	// 入口的监听挂在 document 上（"在会话里划字就能用"），所以只有"选区落在哪棵子树里"能判定归属。
+	// 这里用假 DOM 真造出祖先链，再走**真实**的 selectionchange 处理路径（含 120ms 防抖），
+	// 断言浮动按钮到底显不显示 —— 纯正则断言抓不到这类缺陷。
+	const selectionButton = documentStub.body.children.find((node) => node.dataset?.dshSideBranchSelection === '1')
+	check(selectionButton !== undefined, '划选入口装了浮动按钮（挂在 document.body 上）')
+
+	/** 造一个元素并挂进父链（attribute 走 setAttribute，和官方渲染出来的 DOM 一致）。 */
+	const element = (tag, attrs) => {
+		const node = makeElement(tag)
+		for (const [name, value] of Object.entries(attrs ?? {})) {
+			// className 必须是**属性**（选择器 `.cls` 读的就是它），其余走 attribute
+			if (name === 'className') node.className = value
+			else node.setAttribute(name, value)
+		}
+		return node
+	}
+	/** 选区桩：起点是"文本节点"（真实选区就是文本节点 ⇒ 走 parentElement 那条路）。 */
+	const selectionIn = (host, text) => ({
+		isCollapsed: false,
+		rangeCount: 1,
+		anchorNode: { nodeType: 3, parentElement: host },
+		toString: () => text,
+		getRangeAt: () => ({ getBoundingClientRect: () => ({ top: 100, left: 20, right: 180, bottom: 120, width: 160, height: 20 }) }),
+	})
+	const probe = async (host, text) => {
+		windowStub.getSelection = () => selectionIn(host, text)
+		documentStub.dispatch('selectionchange')
+		await new Promise((resolve) => setTimeout(resolve, 200))
+		return selectionButton?.style.display === 'block'
+	}
+
+	if (selectionButton !== undefined) {
+		// ① 主会话正文 ⇒ 弹
+		const content = element('div', { 'data-conversation-content': '' })
+		const scroll = content.appendChild(element('div', { 'data-conversation-scroll': '' }))
+		const message = scroll.appendChild(element('div', { 'data-chat-flow-kind': 'assistant' }))
+		check(await probe(message, '主会话里选中的一段原文'), '主会话正文里划选 ⇒ 弹出「引用并提问」')
+
+		// ② 右栏文件预览（md）⇒ 不弹
+		const sidePanel = element('div', { 'data-sidebar-right-panel': 'push', 'data-sidebar-right-session': 'session-1' })
+		const fileBody = sidePanel.appendChild(element('div', { 'data-sidebar-right-tab': 'file' }))
+		const md = fileBody.appendChild(element('div', { className: 'markdown' }))
+		check((await probe(md, '右栏 md 里选中的一段')) === false, '右栏文件预览里划选 ⇒ 不弹（不属于主会话）')
+
+		// ③ 设置弹层（body 下的 portal）⇒ 不弹
+		const modal = element('div', { 'data-dsh-settings': '' })
+		const modalText = modal.appendChild(element('div'))
+		check((await probe(modalText, '设置里的说明文字')) === false, '设置弹层里划选 ⇒ 不弹')
+
+		// ④ 右栏里的**子代理会话**（嵌入会话自己也带 data-conversation-content）⇒ 不弹
+		const embeddedContent = sidePanel.appendChild(element('div', { 'data-conversation-content': '' }))
+		const embeddedScroll = embeddedContent.appendChild(element('div', { 'data-conversation-scroll': '' }))
+		const embeddedMessage = embeddedScroll.appendChild(element('div', { 'data-chat-flow-kind': 'assistant' }))
+		check((await probe(embeddedMessage, '子代理会话里的正文')) === false, '右栏嵌入的子代理会话里划选 ⇒ 不弹（只认主会话）')
+
+		// ⑤ 主会话的 composer 座位 ⇒ 不弹（选区在座位里的普通文本上，不是 contenteditable 的情形）
+		const composerSeat = scroll.appendChild(element('div', { 'data-conversation-region': 'composer' }))
+		const composerText = composerSeat.appendChild(element('div'))
+		check((await probe(composerText, '输入区的文字')) === false, '主会话 composer 座位里划选 ⇒ 不弹')
+
+		// ⑥ 本插件自己的面板 ⇒ 不弹（面板根类仍在黑名单里，不靠作用域判据兜底）
+		const ownPanel = element('section', { className: 'dsh-side-branch-panel' })
+		const ownText = ownPanel.appendChild(element('div'))
+		check((await probe(ownText, '面板里的答案')) === false, '临时会话面板里划选 ⇒ 不弹')
+
+		// ⑦ 回归：主会话正文**仍然**能用（避免"修过头"把入口彻底弄没）
+		check(await probe(message, '主会话正文再选一次'), '修好之后主会话正文依然弹出（没有修过头）')
+	}
 }
+
 
 await run()
 
