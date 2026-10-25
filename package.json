@@ -1,15 +1,18 @@
 {
   "name": "dsh-side-branch",
-  "version": "0.2.0",
-  "description": "DSH 侧枝会话：从主会话派生一条只读分支，每轮追问都用主会话最新的已结算内容重建上下文以继续命中前缀缓存，答案不进入主会话的模型上下文。",
+  "version": "0.2.2",
+  "description": "A read-only branch: quote text in the main session to ask follow-ups without polluting its model context. · DSH 只读侧枝：划选文字即可追问，答案不进入主会话的模型上下文。",
   "keywords": [
     "dsh",
     "dsh-plugin",
+    "deepseek",
     "deepseek-harness",
     "cordis",
+    "sidebar",
     "side-chat",
     "side-branch",
     "read-only",
+    "context-isolation",
     "prefix-cache"
   ],
   "type": "module",
@@ -59,7 +62,8 @@
   },
   "license": "MIT",
   "engines": {
-    "node": ">=20"
+    "node": ">=20",
+    "dsh": ">=0.1.5-rc.2"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2"

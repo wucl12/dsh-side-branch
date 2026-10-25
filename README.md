@@ -1,92 +1,125 @@
-# DSH Side Ask (Side Branch)
+# Side Ask · DSH Side Branch
+
+[![npm version](https://img.shields.io/npm/v/dsh-side-branch?label=npm&color=4D6BFE)](https://www.npmjs.com/package/dsh-side-branch)
+[![npm downloads](https://img.shields.io/npm/dm/dsh-side-branch?label=downloads)](https://www.npmjs.com/package/dsh-side-branch)
+[![License](https://img.shields.io/github/license/wucl12/dsh-side-branch?label=license)](LICENSE)
+[![DSH](https://img.shields.io/badge/DSH-0.1.5%20%E2%86%92%200.2.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 
 English | [简体中文](./docs/README.zh-CN.md)
 
-Select text in the main session, and a read-only branch session will pop up in the right sidebar. It inherits the existing context of the main session, streams its answers token-by-token, and **its responses never pollute the model context of the main session**.
+**Quote any passage in the main session and ask about it in a read-only branch in the right sidebar. The answer streams there — and never enters the main session's model context.**
 
-Core Scenario: Asking follow-up questions, looking up terms, or exploring ideas based on the current conversation without interrupting the flow of the main session.
+You know the moment: the agent is mid-refactor and you just want to ask "where else is this function used?" — without the main session remembering the question, and without re-processing a long, expensive context for a side query.
 
-* **Package Name (Implementation):** `dsh-side-branch`
-* **UI Name (Display):** Side Ask
-* **Prerequisites:** Node.js ≥ 20, and `pnpm` installed in the local `PATH`.
-* **Verified DSH Version:** `0.1.5-rc.2` and `0.1.7-rc.2`
+- Ask about the current conversation without adding a token to it.
+- Point the branch at a cheaper model while the main session keeps the expensive one.
+- Let a long task keep running, and ask something unrelated on the side.
 
-<p align="center">
-  <img src="assets/sidebar-guide.png" alt="The Side Ask entry in the right sidebar guide" width="600">
-</p>
-
-<p align="center">
-  <img src="assets/selection-entry.png" alt="Selection Entry" width="600">
-</p>
-
-<p align="center">
-  <img src="assets/panel-answering.png" alt="Panel Answering" width="600">
-</p>
-
-## 💡 Why Build This? (Motivation)
-
-Before developing this project (Sep 2026), I surveyed 14 side-chat/bubble plugins in the DSH ecosystem and found that **none of them could simultaneously meet all the following hard requirements**:
-
-1. **True Context Inheritance** (not just a truncated summary).
-2. **Support for Multi-turn Follow-ups** within the same branch (not a one-off bubble).
-3. **Token-by-Token Streaming** (including reasoning processes).
-4. **Lightweight & Stable** (using only official public APIs, no bloated dependencies).
-5. **Execution-Layer Read-Only, strictly preserving the prefix cache.**
-
-The closest alternatives all had compromises: `@michengai/dsh-btw` was one-off and lacked streaming; `dsh-side-chat-plus` didn't inherit history by default; `dsh-sidenote` was feature-rich but extremely heavy (requiring a 14.7 MB dependency); `@lukeknow0/dsh-side-chat` had excellent architecture but was unmaintained.
-
-The biggest divergence lies in how "read-only" is implemented: similar plugins universally use `toolFilter` to forcefully remove tools from the prompt. However, this causes the branch's prompt prefix to diverge from the main session, **rendering the parent session's accumulated prefix cache completely invalid**.
-This project strictly chooses to enforce read-only at the **execution layer**. Thus, the branch's prompt prefix remains **byte-identical** to the main session, continuing to enjoy an extremely high prefix cache hit rate (empirically 97%–98%).
-
-## ✨ Core Features
-
-* **True Branch, Zero Pollution:** The host strictly prevents writing anything back to the parent session. The Side Ask Q&A will not appear in the main session's model context.
-* **Follows the Main Session, Every Turn:** Every follow-up rebuilds the branch from the main session's **latest settled** content — a fresh seed plus a replay of the branch's own earlier questions and answers — so the branch always sees the main session as it is now **without losing anything it was asked before**. Reusing the main session's model keeps hitting the existing prefix cache, avoiding recalculation.
-* **Execution-Layer Read-Only Isolation:** Security policies do not rely on prompts. Forced takeover by the underlying `ctx.tools.guard` whitelists only six query tools without side effects (`read`, `glob`, `grep`, `web_search`, `web_fetch`, `lsp`). Other instructions (like writing files or executing scripts) are directly rejected at the execution layer.
-* **Ultimate Streaming Experience:** Text and reasoning processes (collapsible "Thinking" rows) are streamed token-by-token. Background generation won't interrupt even if the browser tab is closed.
-* **Persistent Session State:** Panel states are persisted locally per "Session + Panel Grid". Automatically sleeps when idle and silently wakes up on the next query.
-* **Inspectable by Design:** Expand "Inherited from the main session" to see, turn by turn, what the branch actually received — the question, its reasoning, and the answer. The branch notice injected into the prompt is shown verbatim as well, so nothing about what the model sees is a black box.
-
-
-## 📦 Installation & Setup
-
-After installation, you **must restart DSH** for the client plugin to load properly.
-
-**Install via npm (Recommended):**
 ```bash
 dsh plugin --profile web add dsh-side-branch
+# then restart DSH — client plugins load at startup; refreshing the browser is not enough
 ```
 
-**Install via GitHub:**
+`--profile` should be the profile you actually run (`web`, `desktop`, …). Requires Node.js ≥ 20 and `pnpm` on your `PATH`.
+
+> **Written by the agent itself.** Every line of code in this repository was written by DSH in a real session. The author's part was the workflow: setting the direction, reviewing the plans, and verifying the behaviour by hand. See [How this was built](#how-this-was-built).
+
+<p align="center">
+  <img src="assets/panel-answering.png" alt="The branch streams its answer in the right sidebar" width="700">
+</p>
+
+## What makes it different
+
+**The answer never comes back.** The host never writes the branch's output into the parent session. What you ask in the branch stays in the branch — the main agent will not suddenly "know" what you discussed on the side.
+
+**It cannot touch your files.** Read-only is enforced when a tool is *called*, not by hiding tools from the prompt. `ctx.tools.guard()` passes six side-effect-free tools (`read`, `glob`, `grep`, `web_search`, `web_fetch`, `lsp`) and refuses everything else. Because the tools stay in the prompt, the branch's prompt prefix is byte-identical to the main session's, so it keeps hitting the parent's prefix cache — measured 97%–98%, which is what makes a side question nearly free. Why it works this way, and what it costs, is in [`docs/TECHNICAL.md`](docs/TECHNICAL.md).
+
+**It follows the main session.** Every follow-up rebuilds the branch from the main session's latest settled turns and replays the branch's own earlier questions and answers into it. A turn the main session just finished is already visible; something you asked three rounds ago is still remembered.
+
+**You can inspect what it was given.** Expand *Inherited from the main session* to see, turn by turn, what the branch actually received — plus the preamble injected into its prompt, verbatim.
+
+## Install
+
 ```bash
+# npm
+dsh plugin --profile web add dsh-side-branch
+
+# or straight from GitHub
 dsh plugin --profile web add github:wucl12/dsh-side-branch
 ```
 
-> 🤖 **Prompt for AI Agents:** If you are an Agent responsible for installing this plugin or reading its source code, please prioritize reading [`AGENTS.md`](AGENTS.md) in this repository for hard constraints, architectural details, and automated installation guides.
+Use the profile you actually run (`web`, `desktop`, …). **Then restart DSH** — client plugins load at startup, and refreshing the browser is not enough.
 
-## 🚀 How to Use
+Prerequisites: Node.js ≥ 20, and `pnpm` on your `PATH` (`dsh plugin` forwards to pnpm).
 
-1. **Ask via Selection:** Select any text in the main session's body, click the pop-up "Quote and ask", and a temporary session will open in the right panel with the original text sent as a quote. The passage is then **recorded with that round** — a collapsible quote block above your question — and the composer's quote slot clears itself, so the next question starts clean.
-2. **Quick Entry:** There is a quick entry button `↗` on the right side of the main session's input box. Click it to directly summon the Side Ask panel (can be disabled in settings).
-3. **Independent Settings:** In the Side Ask panel, you can individually specify the model and reasoning effort for the current branch without following the main session.
+Also available from a marketplace — [dsh-market](https://github.com/dsh-market/dsh-market) and the [awesome-dsh-plugin catalog](https://awesome-dsh-plugin.com) both list it.
 
-## 🛡️ Security & Limitations
+> 🤖 **Prompt for AI agents:** if you are the agent installing this plugin or reading its source, read [`AGENTS.md`](AGENTS.md) first — it carries the hard constraints, the architecture, and the installation guide.
 
-* **Read-Only Boundaries:** "Read-only" here means **no system side effects** (like writing files or executing commands). However, `web_fetch` / `web_search` still have network access, and `read` can read files within the process's permissions. The allowlist is hardcoded and cannot be relaxed via settings.
-* **What the Branch Can See:** Every follow-up rebuilds it from the main session's **latest settled turns**, so turns the main session has finished do follow along automatically. A turn the main session **has not finished yet** is not visible to the branch (the cut is the last `turn/end`) — but **manual selection quoting is not affected by that**: the limitation is on "seeing it automatically", not on "being able to quote it".
-* **Rebuilds Leave Session Records:** Each rebuild creates a new side-session record, and the platform has **no API to delete a session** ⇒ records would pile up. They are reclaimed by an **orphan sweep at plugin startup**, which logs item by item what it deleted. While **two instances share the same `DSH_HOME`** and run at the same time, that sweep **skips entirely** — a second DSH never has its live branches deleted.
-* **The Context Ceiling Is a Refusal:** On reaching it the plugin **refuses** the turn and tells you to "Clear"; the oldest turns are never silently dropped. `contextFull.used` is an **estimate** (a rebuilt session has no usage yet), so it will not match the real usage once a turn settles.
-* **Cache Hits Are Measured, Not Guaranteed:** The high prefix-cache hit rate is a measurement, not a design promise — the platform may replace the system node in place on the side session's first step, invalidating the cache **from token 0 on**. And **hitting the cache does not mean those tokens stop occupying the context window**.
-* **PTC Mode Exception:** If the main session uses the `ptc` preset (pure code execution tool surface), since `run_code` is permanently rejected by this plugin, the branch will fall back to a **pure text Q&A mode** (no tools can be called).
+## How to use
 
-## 📚 Further Documentation
+1. **Ask via selection:** select text in the main session and click the pop-up **Quote and ask**. The branch opens in the right panel with the passage quoted. That passage is recorded with the round as a collapsible quote block, and the composer's quote slot clears itself so the next question starts clean.
+2. **Quick entry:** the `↗` button to the right of the main session's input opens the panel directly (can be disabled in settings).
+3. **Independent settings:** inside the panel you can give the current branch its own model and reasoning effort, without following the main session.
 
-* [简体中文](./docs/README.zh-CN.md): 中文说明（同一份内容）。
+<p align="center">
+  <img src="assets/selection-entry.png" alt="Select text in the main session to open the branch" width="700">
+</p>
+
+<p align="center">
+  <img src="assets/sidebar-guide.png" alt="The Side Ask entry in the right sidebar guide" width="700">
+</p>
+
+## Compatibility
+
+| DSH | Status |
+| --- | --- |
+| `0.1.5-rc.2` | ✅ verified |
+| `0.1.7-rc.2` | ✅ verified (archive gate) |
+| `0.2.0-rc.2` | ✅ verified — loads, `/side-branch` routes register, panel exercised by hand |
+| `0.2.1-rc.3` | ✅ verified — loads, `/side-branch` routes register and answer (200 / 405 + `Allow`), and the served client bundle carries the scoped quote entry |
+
+The version-dependent seams (the archive gate, `unarchiveSession`) are feature-detected at runtime rather than compared by version number, which is why one published version serves all four. Details in [`docs/TECHNICAL.md`](docs/TECHNICAL.md).
+
+The quote entry added in `0.2.2` needs the conversation-surface markers DSH renders around a session's body (`[data-conversation-content]`, or `[data-conversation-scroll]` on older hosts). On a host that renders neither, the entry stays hidden rather than guessing — everything else in the plugin is unaffected.
+
+## Security & limitations
+
+* **Read-only boundaries:** "read-only" here means **no system side effects** (no writing files, no running commands). `web_fetch` / `web_search` still have network access, and `read` can read any file the process can. The allowlist is hardcoded and cannot be relaxed through settings.
+* **What the branch can see:** it is rebuilt from the main session's **latest settled turns**, so a turn the main session has finished follows along automatically. A turn it **has not finished yet** is not visible (the cut is the last `turn/end`) — but **quoting it by hand is unaffected**: the limit is on seeing it automatically, not on being able to quote it.
+* **Rebuilds leave session records:** each rebuild creates a new side-session record, and the platform has **no API to delete a session**, so records accumulate. They are reclaimed by an orphan sweep at plugin startup, which logs what it deleted. While two instances share the same `DSH_HOME` and run at once, that sweep skips entirely — a second DSH never has its live branches deleted.
+* **The context ceiling is a refusal:** on reaching it the plugin refuses the turn and asks you to clear; the oldest turns are never silently dropped. The `used` figure it reports is an **estimate**, so it will not match the real usage once a turn settles.
+* **Cache hits are measured, not guaranteed:** 97%–98% is a measurement, not a promise — the platform may replace the system node in place on the branch's first step, invalidating the cache from token 0 on. And hitting the cache does not mean those tokens stop occupying the context window.
+* **PTC mode:** if the main session uses the `ptc` preset (a code-execution-only tool surface), the branch falls back to plain text Q&A, because `run_code` is always refused.
+
+## How it compares
+
+Side-chat plugins here differ mainly in where the answer ends up and what the side session is allowed to do.
+
+| | **Side Ask** (`dsh-side-branch`) | [`dsh-sidebar-qa`](https://github.com/ChenRuoT/dsh-sidebar-qa) | [`dsh-selection-toolbar`](https://github.com/suiyideali/dsh-selection-toolbar) |
+| --- | --- | --- | --- |
+| Where the answer ends up | A separate branch; the host never writes it back | A separate DSH session | **The current conversation** — the selection is sent as a user message |
+| Tool access of the side session | Six side-effect-free tools; writes refused when called | Not stated in its README | Same session, so the full tool set |
+| Sees the main session's newest settled turns | Every follow-up (forced rebuild) | Optional — full inherit / summarize / truncate | Yes — it is the same session |
+| Nested follow-ups / follow-up history tree | No | Yes | No |
+| Runtime dependencies | none | none (since 1.0.0) | — |
+
+> The other two columns are what those projects' public READMEs said at the time of writing, and may have moved on since. One row is deliberately a loss: `dsh-sidebar-qa` does nested follow-ups, this plugin does not. The table is here to help you choose, not to rank anyone.
+
+## How this was built
+
+This plugin is a dogfooding result: the entire codebase — host half, client half, and the self-checks under `scripts/` — was written by DSH itself, working against the contracts in [`AGENTS.md`](AGENTS.md). No line of code was written by hand.
+
+The human part was the workflow around it: choosing what to build, setting the direction, reviewing each plan before it was carried out, and verifying the result by hand in a real session. When that verification found something wrong, it went back as a requirement — which is how the archive-gate fix, the multi-segment answer bug and the re-fork design were found.
+
+## Documentation
+
+* [简体中文](./docs/README.zh-CN.md): the same overview in Chinese.
 * [`docs/TECHNICAL.md`](docs/TECHNICAL.md): full technical reference — prefix-cache mechanics, the read-only enforcement pipeline, PTC behaviour, and every known limitation.
-* [`AGENTS.md`](AGENTS.md): Architectural contracts and hard constraints strictly written for AI Agents.
-* [`SECURITY.md`](SECURITY.md): Security commitment scope and vulnerability reporting channels.
-* [`docs/CHANGELOG.md`](docs/CHANGELOG.md): Version release history.
+* [`AGENTS.md`](AGENTS.md): the architecture contract and hard constraints the agent worked from.
+* [`SECURITY.md`](SECURITY.md): security commitment scope and vulnerability reporting channels.
+* [`docs/CHANGELOG.md`](docs/CHANGELOG.md): release history.
 
-## 📄 License
+## License
 
 [MIT](LICENSE)

@@ -2,6 +2,27 @@
 
 [中文](#中文版本记录) · English · [README](../README.md)
 
+## 0.2.2
+
+Two bugs fixed. Both were cases of a branch behaving differently from the main session for no good reason.
+
+- **A turn no longer has a wall-clock timeout.** Every turn used to be killed 90 seconds after it started ("Request timed out (90s)"), even while the model was still streaming, still thinking, or inside a long tool run — while the same question in the main session simply kept waiting. The hard cap is gone. What remains is a **stall watchdog**: it only fires after 30 minutes with **no event at all**, and every stream frame and every session event (tool calls, usage, messages) resets it. So a long turn is never cut off, while a genuinely wedged job cannot stay "running" forever (which would leave that branch permanently busy and leak a concurrency slot). A dead model stream is still caught earlier by the platform's own `streamIdleTimeoutMs` (5 minutes per request, reset on every chunk).
+- **The "quote and ask" entry now appears only in the main session's body.** The entry listens on `document` so it works anywhere in a conversation, and it used to be filtered by a blacklist of inputs — which meant that selecting text in the right-hand sidebar (an open markdown file, the settings dialog, another plugin's panel) also raised it. Clicking it then quoted **text that is not part of the main session** into the branch's prompt. The entry now requires the selection to sit inside the conversation surface (`[data-conversation-content]`, falling back to `[data-conversation-scroll]`) and excludes the right sidebar — including the embedded sub-agent conversation it can host, which carries the same surface marker — and the composer seat. No conversation surface on screen means no entry (fail-closed) rather than a fallback to the old guesswork.
+- **A failed turn now says why.** `turn/end` with `reason: { kind: 'error', error }` used to be flattened into "The ask ended abnormally: error", dropping the real cause (provider error, platform stream timeout, model offline). The message/code is now shown to the user.
+- **0.2.1's documentation work ships here.** 0.2.1 was never published on its own; the README rewrite, the metadata changes and the `engines.dsh` declaration are all in this release.
+- **Verified on DSH `0.2.1-rc.3`** in an isolated playground instance: the plugin loads, the `/side-branch` routes register and answer (200, and 405 + `Allow` for a wrong method), and the client bundle the browser receives carries the scoped entry. The long-turn path was not re-run against a real model in this round — it is covered by the new source-level assertions instead.
+
+## 0.2.1
+
+Documentation and metadata only — no behaviour change, no code change.
+
+- **README rebuilt around what a first-time reader needs.** The first screen leads with the three situations the plugin is for, the install command and the restart warning follow immediately, and the guarantees are stated as outcomes rather than as mechanisms.
+- **The comparison table moved to the end**, and one row is left as a deliberate loss: `dsh-sidebar-qa` supports nested follow-ups, this plugin does not.
+- **Dropped an unsupported claim.** The README and `TECHNICAL.md` used to say that comparable plugins usually implement read-only through the prompt layer (`toolFilter` / `tools.restrict`). That was never verified, and it is not true of the closest alternative — the text now explains the design decision without asserting what anyone else does.
+- **Documented how the plugin was built.** The codebase was written by DSH itself; the human work was direction, plan review and hands-on verification. See *How this was built* in the README.
+- **Bilingual `package.json` description, English first, plus an `engines.dsh: >=0.1.5-rc.2` declaration.** dsh-market reads the latter for host-aware discovery and evaluates it with `includePrerelease`, so it is a declaration and not a gate.
+- **Verified on DSH `0.2.0-rc.2`** — the plugin loads, the `/side-branch` routes register, and the panel was exercised by hand. The `0.2.0` boot-time peer gate only inspects `@deepseek-ai/dsh*` peer ranges, which this plugin declares none of.
+
 ## 0.2.0
 
 Behaviour change: the branch now **follows the main session** instead of being frozen at the moment it was opened.
@@ -48,6 +69,27 @@ First public release.
 - Zero third-party runtime dependencies, no build step.
 
 ## 中文版本记录
+
+## 0.2.2
+
+修两个 BUG。两个都是"侧枝在没有理由的地方表现得和主会话不一样"。
+
+- **一轮不再有总时长超时。** 以前每一轮从建 job 起算 90 秒就被无条件掐断（面板显示「请求超时（90 秒）」），哪怕模型还在流式输出、还在思考、或正卡在一次长工具里；而同样的提问在主会话里只是继续等。硬上限已删除，只留一个**停滞看门狗**：**整整 30 分钟一个事件都没有**才触发，而任何一个流式帧、任何一个会话事件（工具调用、用量、消息）都会重新计时。所以长回合永远不会被它掐断，而真卡死的 job 也不会永驻（永驻会让这一段会话永久 busy，还占着并发名额）。模型流真断掉的情况仍然由平台自己的 `streamIdleTimeoutMs`（每请求 5 分钟、收到 chunk 就重置）先收口。
+- **「引用并提问」只在主会话正文区出现。** 入口的监听挂在 `document` 上（这样在会话里划字都能用），过滤原本只有一层输入框黑名单——于是右栏（打开的 md、设置弹层、其它插件的面板）里划字也会弹，点下去就把**不属于主会话的原文**引进了侧枝的 prompt。现在要求选区落在会话正文里（`[data-conversation-content]`，旧版退回 `[data-conversation-scroll]`），并排除右栏（含右栏里的子代理嵌入会话——它自己也带同样的正文标记）与 composer 座位。屏幕上没有会话正文时**不弹**（fail-closed），不再退回旧的黑名单猜测。
+- **失败的一轮现在会说原因。** `turn/end` 的 `reason: { kind: 'error', error }` 以前被压成「提问意外终止：error」，真正的原因（供应商报错、平台流空闲超时、模型下线）全丢了；现在把 message/code 显示给用户。
+- **0.2.1 的文档改动随这一版发布。** 0.2.1 没有单独发布；README 重写、元数据改动与 `engines.dsh` 声明都在这一版里。
+- **已在 DSH `0.2.1-rc.3` 上验证**（隔离试验场）：插件加载成功、`/side-branch` 路由注册并能应答（200；方法不对回 405 + `Allow`），浏览器收到的 client bundle 带上了限定作用域的引用入口。这一轮**没有**再用真实模型跑长回合，那部分由新增的源码级断言守着。
+
+## 0.2.1
+
+仅文档与元数据，无行为改动、无代码改动。
+
+- **README 按「第一次来的人需要什么」重写。** 首屏先讲这个插件适用于哪三种情况，紧接着就是安装命令与重启提示；各项保证改成讲结果，而不是讲机制。
+- **对比表挪到文末**，并保留一行主动认输：`dsh-sidebar-qa` 支持嵌套追问，本插件不支持。
+- **删掉一条没有依据的说法。** README 与 `TECHNICAL.md` 原先写「同类插件普遍在提示词层实现只读（`toolFilter` / `tools.restrict`）」。这从未核实过，而且对最接近的替代品并不成立——现在只讲我们自己的设计取舍，不再断言别人怎么做。
+- **补上「这个插件是怎么写出来的」**：整个代码库由 DSH 自己完成，人负责的是定方向、审计划、亲手验证。见 README 的《它是怎么被写出来的》。
+- **`package.json` 的 description 改为中英双语、英文在前**，并声明 `engines.dsh: >=0.1.5-rc.2`。dsh-market 会读取后者做宿主兼容性发现，并用 `includePrerelease` 求值，所以这是声明而不是闸门。
+- **已在 DSH `0.2.0-rc.2` 上验证**——插件加载、`/side-branch` 路由注册、面板人工实跑通过。`0.2.0` 启动期的 peer 闸门只检查 `@deepseek-ai/dsh*` 的 peer 区间，本插件一个都没声明。
 
 ## 0.2.0
 

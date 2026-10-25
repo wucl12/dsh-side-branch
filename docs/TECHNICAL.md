@@ -10,7 +10,7 @@ Typical use: ask a follow-up question, look up a term, or explore an idea *along
 | --- | --- |
 | **Package name** (implementation) | `dsh-side-branch` |
 | **UI name** (what you see) | **Side Ask** · 中文「临时会话」 |
-| **Verified DSH version** | `0.1.5-rc.2` and `0.1.7-rc.2` (see "Archived sessions" below) |
+| **Verified DSH version** | `0.1.5-rc.2`, `0.1.7-rc.2`, `0.2.0-rc.2` and `0.2.1-rc.3` (see "Archived sessions" below) |
 | **Prerequisites** | Node.js ≥ 20 and `pnpm` on your `PATH` |
 | **Runtime dependencies** | none — no build step, no third-party packages |
 | **License** | MIT |
@@ -40,7 +40,7 @@ The closest alternatives each traded something away. For example:
 - [`dsh-sidenote`](https://github.com/g-yixuan/dsh-sidenote) is a full-featured side chat with one-click "reflow into the main session"; by design its conclusions are meant to be written back into the main conversation.
 - [`@lukeknow0/dsh-side-chat`](https://github.com/Lukeknow0/dsh-side-chat) has an excellent architecture and a comparable read-only model, but its README states it is an MVP.
 
-The sharpest split is **how "read-only" is implemented**. Comparable plugins usually enforce it in the *prompt layer* — removing the tools from the prompt via `toolFilter`, or restricting them with `tools.restrict`. Functionally that does produce read-only. But it also makes the branch's prompt prefix diverge from the main session's, **which invalidates every prefix-cache entry the parent session has accumulated**; the whole context is then recomputed on every turn.
+The obvious way to get read-only is to work at the *prompt layer* — remove the tools from the prompt (`toolFilter`) or restrict them (`tools.restrict`). Functionally that does produce read-only. But it also makes the branch's prompt prefix diverge from the main session's, **which invalidates every prefix-cache entry the parent session has accumulated**; the whole context is then recomputed on every turn.
 
 This plugin enforces read-only in the **execution layer** instead (`ctx.tools.guard`, the public `dsh-tools` contract). The tools stay in the prompt; the model may attempt to call them, but execution is denied — so the prompt is byte-identical to the main session and the cache keeps hitting (measured at 97%–98%).
 
@@ -109,7 +109,7 @@ Install the DSH plugin dsh-side-branch into my web profile:
 
 ## 🚀 Usage
 
-Select text in the main session's body: an ask entry appears above the selection. Click it, the right-hand panel opens, type your question and send. The selected text travels with the question as a quote.
+Select text in the main session's body: an ask entry appears above the selection. It appears **only** there — not in the right-hand panels (file preview, settings, other plugins' panes) and not in an embedded sub-agent conversation hosted there, because those are not the main session's content. Click it, the right-hand panel opens, type your question and send. The selected text travels with the question as a quote.
 
 There is a second entry point: a button on the right of the main session's composer opens the panel directly (it can be turned off in settings).
 
@@ -304,7 +304,7 @@ Measured: in a PTC parent session the PTC preamble applied from the first round,
 - **The cache hit rate is measured, not guaranteed.** The platform may **replace the system node in place** on the side session's first step (node 0) — the official wording is *"A prompt change that replaces a system node in place makes the request differ from that node's first token — in full when the node is node 0"* ⇒ if that happens, **everything from token 0 on is billed at full price**. A mismatched tool set also forces a new sequence. So there is no "always hits": 97%–98% is a measurement, not a promise. And **hitting the cache does not mean the tokens stop occupying the context window**: the `inputTokens + cacheRead + cacheWrite` total counts the cached tokens just the same.
 - With a `ptc` main session the branch **cannot use a single tool** (the only visible entry, `run_code`, is always denied). A custom preset saved from the PTC template also defeats the opening-time detection, wasting the first round.
 - After being denied by the guard, the model often **retries the same tool**, wasting a round. This is independent of PTC mode and was observed in both.
-- Verified on DSH `0.1.5-rc.2` (before the archive gate) and `0.1.7-rc.2` (with it). `0.1.6-alpha.2` was checked by reading its published packages only — it already has `unarchiveSession` and does **not** yet have `ArchivedSessionGate`, so the feature-detected path keeps it working — but no end-to-end run was done there.
+- Verified on DSH `0.1.5-rc.2` (before the archive gate) and `0.1.7-rc.2` (with it). `0.1.6-alpha.2` was checked by reading its published packages only — it already has `unarchiveSession` and does **not** yet have `ArchivedSessionGate`, so the feature-detected path keeps it working — but no end-to-end run was done there. Also verified end-to-end on `0.2.0-rc.2`: the plugin loads, the `/side-branch` routes register, and the panel was exercised by hand.
 - The MCP tool conclusion comes from reading the code path, not from a live test (`run_code` was tested live).
 - The effect of the branch preamble on model behaviour has not been quantified. It asks the model to say "this needs the main session" when it would have to read a file to answer; whether that makes the model overly conservative needs human judgement.
 

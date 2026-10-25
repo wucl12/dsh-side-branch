@@ -84,6 +84,10 @@
 
 **只读的四条护栏都别动**：`ALLOWED_TOOLS` 常量、`setup(agentCtx)` 里的 `tools.guard`（拿不到就 `throw`，fail-loud）、`ROUTE_METHODS`（405 + `Allow` 的方法契约）、以及宿主侧对 `conversationId` 归属的校验。
 
+**不要给一轮加"总时长"超时。** 侧枝除了工具放行名单之外不应与主会话有别的区别：主会话不限制一轮跑多久（长思考、长工具、多步），侧枝也不能。兜底只能是 `STALL_TIMEOUT_MS` 的**停滞**看门狗 —— 它的计时器由**每一个事件**重置（建 job、流式帧、会话事件三处），所以"跑得久"不会被它掐断，只有"这么久连一个事件都没有"才会。0.2.1 及以前是 90 秒的**总时长**硬超时，长回合被无条件掐断、面板显示「请求超时（90 秒）」。`scripts/smoke.mjs` 的第 ⑩ 节守着这条。
+
+**划选入口只能出现在主会话正文区。** 监听挂在 `document` 上（"在会话里划字就能用"），所以必须靠 DOM 归属判定：`insideMainConversation()` 要求祖先里有 `[data-conversation-content]`（旧版退回 `[data-conversation-scroll]`），并排除右栏的 `[data-sidebar-right-panel]` / `[data-sidebar-right-session]` / `[data-sidebar-chat]` 与 `[data-conversation-region="composer"]`。**子代理的嵌入会话也带正文标记**（右栏 sidebar chat），只判正文标记会把子会话当成主会话。找不到正文标记时**不弹**（fail-closed）。漏掉这条的后果不是界面瑕疵：用户会把右栏（文件预览 / 设置 / 别人插件的面板）里的一段原文引用进侧枝的 prompt。`scripts/client-check.mjs` 用假 DOM 驱动**真实的 `selectionchange` 路径**断言这一点（七种位置）。
+
 **`peerDependencies` 里的 `@deepseek-ai/cordis` 是声明性的**：插件代码**不 import 它**（宿主半的运行期服务全部经 `ctx` 软获取，客户端半只 `require` 平台内置模块）。它是按生态惯例声明的，用来表明本插件挂在哪套契约上——**别当成漏删的依赖删掉**，也别为了"用上它"去加 import。
 
 ## 为什么这样做（改动前先读，别照着直觉改回去）
@@ -160,7 +164,7 @@ node scripts/client-check.mjs  # ② 客户端运行时自检
 # 两条一起跑：npm run check ｜ 只跑客户端那条：npm run client-check
 ```
 
-**① `scripts/smoke.mjs`（源码级）** 不需要 DSH 运行时，直接加载宿主半并用假 ctx 调 `apply()`。当前共 **136 条断言**，分九节：
+**① `scripts/smoke.mjs`（源码级）** 不需要 DSH 运行时，直接加载宿主半并用假 ctx 调 `apply()`。当前共 **153 条断言**，分十节：
 
 1. 模块能加载、导出名与 `package.json` 一致、路由前缀是 `/side-branch`、卸载 disposer 可调用；
 2. **只读承诺**：`ALLOWED_TOOLS` 与 `TOOL_CHOICES` 仍是那六个名字且互相一致，九个危险工具名都不在其中；客户端没有工具开关的残留、宿主不接受客户端提交的工具名单；分支引导词的名单直接来自常量；guard 的判据仍是按名单放行、注册点仍在 `setup(agentCtx)` 里、拿不到 guard 仍 fail-loud。
@@ -172,6 +176,7 @@ node scripts/client-check.mjs  # ② 客户端运行时自检
 7. **Re-Fork 架构（0.2.0）**：`shouldReFork` 必须**同时**判"主会话多了已结算回合"与"模型/推理等级变了"两条；`parentCut` 必须在**建段时**就记（睡觉/唤醒也要带着它走，漏了就是每轮白 re-fork）；重放白名单**正好**是 5 种 surface 事件（`system/message`、`developer/message`、`user/message`、`assistant/message`、`tool/result`）且不含纯日志事件；重放**绝不复制 `sourceEventSeqs`**；重放**不截断**；**先重放成功、再释放老会话**（失败时丢弃刚建的新会话）；每轮 re-fork 都回 `handoff: true`；旧的 `seedSource` 换段路径已彻底删除。这一节还守着上限改成估算的三处：`estimateRequestTokens` / `lastPromptTokensOf` 存在，且**不再**用 `conv.lastContextTokens` 那条 re-fork 之后必然为 `undefined` 的旧判据；
 8. **多段回答（0.2.0）**：`job.segments` 有序段落；`start` 帧按 `turn`/`step` 分流（同 step 换 `attemptId` 才算重试 ⇒ 只丢该 step，step 变了 ⇒ 发 `segment` 开新段）；`replace` **只**替换当前段；`snapshot` 与终态都带 `segments`；`syncSegmentShortcuts` 让 `text`/`reasoning` 成为段落数组的**纯函数**；旧的 `attempts` 字段已拆成 `steps`/`retries`；客户端 `normalizeSegments` 对**老数据**（只有 `answer`/`reasoning`）向后兼容；另守「引用随轮入档」：发送时把收窄后的引用原文记进该轮（`reference`），渲染成问题上方的可折叠引用块，并**自动清空**引用槽；`normalizeRound` 保留它 ⇒ 刷新后引用块还在。
 9. **启动清理与只读路由（0.2.0）**：`/inherited` 登记进 `ROUTE_METHODS`（不登记的话错方法会掉进 404，破坏 405 + `Allow` 契约）；`handleInherited` 按"最后一轮全文 + 更早每轮一行摘要"截断；继承内容**不进** `normalizeRound`（只放组件内存态）；孤儿判据要求目录名**正好**是 `side-<uuid>`；**实例租约**（`side-branch-instances/*.json`，心跳 + PID 判活）；发现别的活着的实例就**整个跳过**；删除留**清单日志**；清理严格限定在 `sessions` 根目录下、只认 `side-` 前缀（不碰 `session-*` 主会话）。
+10. **与主会话对齐（0.2.2）**：`ANSWER_TIMEOUT_MS`（90 秒总时长硬超时）**已删除**，只剩 `STALL_TIMEOUT_MS` 停滞看门狗（≥ 10 分钟、**任一事件**都重挂：建 job / 流式帧 / 会话事件三处）；`turn/end` 的 `error` 原因取具体 `message` 交给面板（不再只显示「意外终止：error」）；划选入口的作用域判据 `insideMainConversation` 存在且被 `selectionText` 调用，判 `[data-conversation-content]` / `[data-conversation-scroll]`、排除 `[data-sidebar-right-panel]` / `[data-sidebar-right-session]` / `[data-sidebar-chat]` 与 composer 座位。
 
 **① 不验证**的东西：回答质量、真实 guard 拦截（第 2 节那几条是**源码级正则断言**，不是真驱动一次拦截）、SSE 行为与界面 —— 客户端那半由下面的 ② 补到"渲染树"为止；真实 DOM 布局 / CSS / 真实滚动位置 / 真实网络 / 真实模型它同样够不到，那几处只能靠仓库**外**的一次性 headless 端到端 harness（见下）与人工。
 
@@ -186,9 +191,9 @@ node scripts/client-check.mjs <别的 client.js 路径>   # 反向验证脚本�
 
 **它怎么做到的。** 不装浏览器，而是在 Node 里把 `lib/client.js` **真的跑起来**：bundle 的形态是 `window.__ModuleLoader__.load({ factory })`，它只从 `require` 取三样东西 —— `react`、`react-dom`、`@deepseek-ai/dsh-client-ui-primitives`（后两样**故意不提供**，bundle 自带降级分支，正好连降级路径一起测了）；用到的 React API 只有 **8 个**（`createElement` / `useState` / `useEffect` / `useLayoutEffect` / `useReducer` / `useRef` / `Fragment` / `Component`），所以一个极简 React + 极简 DOM 就够。面板的能力**全部来自席位的 `inject` face**（`inject: () => ({ startSideBranch, … })`），脚本照官方那样把它展开进 props —— 顺便也就验了 face 里该有的键。再用真实形状的 `fetch` / `EventSource` 桩驱动：往输入框打字（走真实 `onChange`）、点发送（走真实 `onClick`）、喂真实形状的 SSE 帧。
 
-**它验了什么。** bundle 能装载、导出 `apply()`、正文组件被注册并渲染成功；客户端把词典注册进了 locale 服务（断言因此盯的是**真实文案**，不是"返回 key"那种弱断言）；点发送确实发**一次** `POST /side-branch/start` 且带上问题原文，并打开指向该 job 的 SSE 流；喂进去的每一帧都有监听函数；**多段正文都渲染出来且顺序正确、工具行夹在两段正文之间**（"只剩最后一段"那个 bug 的回归判据）；注入的分支引导词全文可见；**自动滚底落在真正可滚动的那一层**上（`.dsh-side-branch-scroll`），而不可滚动的轮次列表上没有挂 ref。
+**它验了什么。** bundle 能装载、导出 `apply()`、正文组件被注册并渲染成功；客户端把词典注册进了 locale 服务（断言因此盯的是**真实文案**，不是"返回 key"那种弱断言）；点发送确实发**一次** `POST /side-branch/start` 且带上问题原文，并打开指向该 job 的 SSE 流；喂进去的每一帧都有监听函数；**多段正文都渲染出来且顺序正确、工具行夹在两段正文之间**（"只剩最后一段"那个 bug 的回归判据）；注入的分支引导词全文可见；**自动滚底落在真正可滚动的那一层**上（`.dsh-side-branch-scroll`），而不可滚动的轮次列表上没有挂 ref；**划选入口的作用域**：假 DOM 里造出祖先链（主会话正文 / 右栏文件预览 / 设置弹层 / 右栏里的子代理嵌入会话 / composer 座位 / 本插件面板），走真实的 `selectionchange` → 120ms 防抖 → `update()` 路径，断言浮动按钮该弹的弹、该藏的一个都不弹。
 
-当前共 **34 项**，PASS/FAIL 直接看 stdout（全过时末行是 `全部通过（34 项）`，有失败则以非零退出码结束）。
+当前共 **42 项**，PASS/FAIL 直接看 stdout（全过时末行是 `全部通过（42 项）`，有失败则以非零退出码结束）。
 
 ⚠️ **它不覆盖什么（如实登记）**：真实 DOM 布局、CSS、真实滚动位置、真实浏览器事件、真实网络与真实模型。它是**"数据 → 渲染树"这一段的测试，不是浏览器测试** —— 那几处仍然只能人工在浏览器里看。
 
@@ -219,5 +224,5 @@ node scripts/client-check.mjs <别的 client.js 路径>   # 反向验证脚本�
 - **提交信息（commit message）一律用英文。** 这是公开仓库、历史面向英文读者：标题用 `type: 祈使句`（如 `fix: un-archive the side session before each turn`），正文讲"为什么"，**不要混中文**。
 - 建议拆成两个提交：`lib/` + `scripts/` 的行为改动一个，纯文档 / 版本号一个。
 - **推之前**先跑 `node scripts/smoke.mjs` 与 `node scripts/client-check.mjs`（上一节；或 `npm run check` 两条一起跑），并在真宿主里人工跑一遍受影响的链路。
-- 版本号与 `docs/CHANGELOG.md` 同步更新；发布时打 `v<version>` 标签（已有 `v0.1.0`、`v0.1.1`；当前版本是 **0.2.0**）。
+- 版本号与 `docs/CHANGELOG.md` 同步更新；发布时打 `v<version>` 标签（已有 `v0.1.0`、`v0.1.1`、`v0.2.0`；本次发布打 `v0.2.2`）。
 - 远端：`origin` = `github.com/wucl12/dsh-side-branch`，主分支 `main`。
