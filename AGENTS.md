@@ -225,4 +225,7 @@ node scripts/client-check.mjs <别的 client.js 路径>   # 反向验证脚本�
 - 建议拆成两个提交：`lib/` + `scripts/` 的行为改动一个，纯文档 / 版本号一个。
 - **推之前**先跑 `node scripts/smoke.mjs` 与 `node scripts/client-check.mjs`（上一节；或 `npm run check` 两条一起跑），并在真宿主里人工跑一遍受影响的链路。
 - 版本号与 `docs/CHANGELOG.md` 同步更新；发布时打 `v<version>` 标签（已有 `v0.1.0`、`v0.1.1`、`v0.2.0`；本次发布打 `v0.2.2`）。
+- **发布走 GitHub Actions（npm Trusted Publishing / OIDC）**：推 `v<version>` 标签即触发 `.github/workflows/release.yml`，不需要任何 token，也不需要 2FA 验证码。流水线自己会校验 tag 与 `package.json` 版本一致，并在上传前跑 `prepublishOnly` 里的两条自检。
+  - 首次配置：npmjs.com → 该包 → **Settings → Trusted Publishing** → 添加 GitHub Actions，Repository = `wucl12/dsh-side-branch`，Workflow filename = `release.yml`。
+  - 本地 `npm publish` 只当应急手段：npm 现在要求 2FA 或带 bypass 的 granular token，而后者正在被下线。
 - 远端：`origin` = `github.com/wucl12/dsh-side-branch`，主分支 `main`。

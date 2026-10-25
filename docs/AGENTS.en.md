@@ -227,4 +227,7 @@ It covers exactly what the unit check (`scripts/smoke.mjs`) cannot reach: the br
 - Prefer two commits: one for the `lib/` + `scripts/` behaviour change, one for documentation / version bumps.
 - **Before pushing**, run `node scripts/smoke.mjs` and `node scripts/client-check.mjs` (previous section; or `npm run check` to run both at once) and run the affected path manually in a real host.
 - Keep the version in `package.json` and `docs/CHANGELOG.md` in sync; tag releases as `v<version>` (`v0.1.0`, `v0.1.1` and `v0.2.0` exist; this release tags `v0.2.2`).
+- **Releases go through GitHub Actions (npm Trusted Publishing / OIDC).** Pushing a `v<version>` tag triggers `.github/workflows/release.yml`; no token and no 2FA code are involved. The workflow checks that the tag matches `package.json` and lets `prepublishOnly` run both self-checks before anything is uploaded.
+  - One-time setup: npmjs.com → the package → **Settings → Trusted Publishing** → add GitHub Actions with Repository = `wucl12/dsh-side-branch` and Workflow filename = `release.yml`.
+  - A local `npm publish` is an emergency path only: npm now requires 2FA or a granular token with bypass, and the latter is being retired.
 - Remote: `origin` = `github.com/wucl12/dsh-side-branch`, main branch `main`.
