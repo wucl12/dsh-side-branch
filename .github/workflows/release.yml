@@ -1,13 +1,18 @@
 name: release
 
-# Publishing goes through npm's Trusted Publishing (OIDC), not through a token:
-# the runner asks GitHub for a short-lived identity token, npm exchanges it, and
-# the package is published with provenance. No secret is stored anywhere, and no
-# 2FA code is needed — a token with "bypass 2FA" would be the alternative, and npm
-# is retiring those.
+# Publishing goes through npm's Trusted Publishing (OIDC) with a stage-only
+# configuration: the runner asks GitHub for a short-lived identity token, npm
+# exchanges it, and the tarball is put in the stage queue instead of going live.
+# A maintainer then approves it on npmjs.com with their own 2FA. No secret is
+# stored anywhere and CI never needs a 2FA code.
 #
-# One-time setup on npmjs.com: the package's Settings -> Trusted Publishing gets a
-# GitHub Actions publisher for this repository and this workflow filename.
+# Stage-only is deliberate: `npm publish` from this workflow is rejected, and the
+# only thing a compromised tag push could do is leave a staged version that still
+# needs a human approval.
+#
+# One-time setup on npmjs.com: package Settings -> Trusted Publishing has a GitHub
+# Actions publisher for this repository, this workflow filename, and ONLY the
+# "npm stage publish" permission.
 on:
   push:
     tags: ["v*"]
@@ -30,10 +35,15 @@ jobs:
         with:
           node-version: "24"
 
+      # `npm stage` needs npm >= 11.15.0; the bundled version moves with Node, so
+      # pin the floor instead of trusting whichever one ships with the runner.
+      - name: Ensure npm supports staged publishing
+        run: npm install --global npm@^11.15.0
+
       - name: Show the toolchain
         run: node --version && npm --version
 
-      # A tag that disagrees with package.json would publish the wrong version.
+      # A tag that disagrees with package.json would stage the wrong version.
       - name: Check the tag matches package.json
         run: |
           version="$(node -p "require('./package.json').version")"
@@ -42,7 +52,10 @@ jobs:
             exit 1
           fi
 
-      # prepublishOnly runs scripts/smoke.mjs and scripts/client-check.mjs, so a
-      # failing self-check stops the upload before anything reaches the registry.
-      - name: Publish
-        run: npm publish --provenance --access public
+      # Both self-checks. prepublishOnly may or may not fire for a staged publish,
+      # so run them explicitly: a failing check must stop the stage.
+      - name: Self-check
+        run: npm run check
+
+      - name: Stage the release
+        run: npm stage publish --provenance --access public

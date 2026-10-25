@@ -225,7 +225,10 @@ node scripts/client-check.mjs <别的 client.js 路径>   # 反向验证脚本�
 - 建议拆成两个提交：`lib/` + `scripts/` 的行为改动一个，纯文档 / 版本号一个。
 - **推之前**先跑 `node scripts/smoke.mjs` 与 `node scripts/client-check.mjs`（上一节；或 `npm run check` 两条一起跑），并在真宿主里人工跑一遍受影响的链路。
 - 版本号与 `docs/CHANGELOG.md` 同步更新；发布时打 `v<version>` 标签（已有 `v0.1.0`、`v0.1.1`、`v0.2.0`；本次发布打 `v0.2.2`）。
-- **发布走 GitHub Actions（npm Trusted Publishing / OIDC）**：推 `v<version>` 标签即触发 `.github/workflows/release.yml`，不需要任何 token，也不需要 2FA 验证码。流水线自己会校验 tag 与 `package.json` 版本一致，并在上传前跑 `prepublishOnly` 里的两条自检。
-  - 首次配置：npmjs.com → 该包 → **Settings → Trusted Publishing** → 添加 GitHub Actions，Repository = `wucl12/dsh-side-branch`，Workflow filename = `release.yml`。
+- **发布走 GitHub Actions（npm Trusted Publishing / OIDC）+ 暂存发布**：推 `v<version>` 标签触发 `.github/workflows/release.yml`，流水线校验 tag 与 `package.json` 一致、跑两条自检，再 `npm stage publish` 把 tarball 放进暂存队列；维护者在 npmjs.com 的 **Staged versions** 点 **Approve**（安全密钥确认）之后才真正上线并更新 `latest`。
+  - 信任配置是 **stage-only**（只勾 `npm stage publish`，**不勾** `npm publish`）：该配置下 `npm publish` 会被 npm 直接拒掉，流水线也只能暂存 ⇒ 即使有人推了恶意 tag，没有人工批准也上不了线。
+  - 首次配置：npmjs.com → 该包 → **Settings → Trusted Publishing** → 添加 GitHub Actions，Repository = `wucl12/dsh-side-branch`，Workflow filename = `release.yml`，Allowed actions 只勾 `npm stage publish`。
+  - 审批**必须在网页上做**：本机 2FA 是安全密钥，而 `npm stage approve` 命令行要的是 TOTP 验证码，用不了。
+  - 流水线需要 npm ≥ 11.15.0 才有 `npm stage`，所以 workflow 里显式 `npm install --global npm@^11.15.0`，不押运行器自带哪个版本。
   - 本地 `npm publish` 只当应急手段：npm 现在要求 2FA 或带 bypass 的 granular token，而后者正在被下线。
 - 远端：`origin` = `github.com/wucl12/dsh-side-branch`，主分支 `main`。
